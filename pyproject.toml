@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cli-galaxy"
+dynamic = ["version"]
+description = "CLI harness for the Galaxy bioinformatics platform"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "cli-anything" },
+]
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.0.0",
+    "prompt-toolkit>=3.0.0",
+    "requests>=2.28.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+[project.scripts]
+cli-galaxy = "cli_anything.galaxy.galaxy_cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "cli_anything.galaxy.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["cli_anything*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"cli_anything.galaxy" = ["skills/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["cli_anything/galaxy/tests"]

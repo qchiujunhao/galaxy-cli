@@ -1,0 +1,100 @@
+"""Dataset management — upload, download, show, delete, peek at datasets."""
+
+from pathlib import Path
+
+
+def upload_dataset(client, history_id, file_path, file_type="auto", dbkey="?"):
+    """Upload a local file to a Galaxy history."""
+    result = client.upload_file(file_path, history_id, file_type=file_type, dbkey=dbkey)
+    outputs = result.get("outputs", [])
+    if outputs:
+        ds = outputs[0]
+        return {
+            "id": ds.get("id", ""),
+            "name": ds.get("name", ""),
+            "state": ds.get("state", ""),
+            "history_id": history_id,
+            "file_type": ds.get("extension", file_type),
+        }
+    return {"status": "uploaded", "history_id": history_id, "raw": result}
+
+
+def show_dataset(client, dataset_id, history_id=None):
+    """Show details of a dataset."""
+    if history_id:
+        info = client.get(f"histories/{history_id}/contents/{dataset_id}")
+    else:
+        info = client.get(f"datasets/{dataset_id}")
+    return {
+        "id": info.get("id", ""),
+        "name": info.get("name", ""),
+        "state": info.get("state", ""),
+        "extension": info.get("extension", ""),
+        "file_size": info.get("file_size", 0),
+        "genome_build": info.get("genome_build", "?"),
+        "data_type": info.get("data_type", ""),
+        "create_time": info.get("create_time", ""),
+        "update_time": info.get("update_time", ""),
+        "deleted": info.get("deleted", False),
+        "visible": info.get("visible", True),
+        "metadata": info.get("metadata", {}),
+        "history_id": info.get("history_id", history_id or ""),
+        "history_content_type": info.get("history_content_type", ""),
+        "misc_info": info.get("misc_info", ""),
+        "misc_blurb": info.get("misc_blurb", ""),
+    }
+
+
+def download_dataset(client, dataset_id, output_path):
+    """Download a dataset to a local file."""
+    return client.download_dataset(dataset_id, output_path)
+
+
+def peek_dataset(client, dataset_id, lines=10):
+    """Get a preview of dataset contents."""
+    info = client.get(f"datasets/{dataset_id}", params={"data_type": "raw_data", "provider": "base"})
+    # The peek is typically included in the dataset info
+    if "peek" in info:
+        raw_peek = info["peek"]
+        peek_lines = raw_peek.strip().split("\n")[:lines]
+        return {"id": dataset_id, "lines": peek_lines, "total_shown": len(peek_lines)}
+    # Fallback: try getting raw content directly
+    try:
+        preview = client.get(f"datasets/{dataset_id}/display", params={"offset": 0, "limit": lines})
+        if isinstance(preview, dict) and "raw" in preview:
+            peek_lines = preview["raw"].strip().split("\n")[:lines]
+            return {"id": dataset_id, "lines": peek_lines, "total_shown": len(peek_lines)}
+    except Exception:
+        pass
+    return {"id": dataset_id, "lines": [], "total_shown": 0, "note": "Preview not available"}
+
+
+def delete_dataset(client, dataset_id, history_id, purge=False):
+    """Delete a dataset from a history."""
+    payload = {"deleted": True}
+    if purge:
+        payload["purged"] = True
+    client.put(f"histories/{history_id}/contents/{dataset_id}", json_data=payload)
+    return {"id": dataset_id, "history_id": history_id, "status": "deleted", "purged": purge}
+
+
+def list_datasets(client, history_id, limit=50, offset=0, deleted=False):
+    """List datasets in a history."""
+    params = {"limit": limit, "offset": offset}
+    if deleted:
+        params["deleted"] = True
+    items = client.get(f"histories/{history_id}/contents", params=params)
+    return [
+        {
+            "id": item["id"],
+            "name": item.get("name", ""),
+            "type": item.get("type", ""),
+            "state": item.get("state", ""),
+            "extension": item.get("extension", ""),
+            "file_size": item.get("file_size", 0),
+            "deleted": item.get("deleted", False),
+            "visible": item.get("visible", True),
+        }
+        for item in items
+        if item.get("type") in ("file", "dataset")
+    ]
