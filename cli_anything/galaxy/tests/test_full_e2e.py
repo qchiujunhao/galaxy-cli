@@ -33,6 +33,7 @@ def _resolve_cli(name):
     if force:
         raise RuntimeError(f"{name} not found in PATH. Install with: pip install -e .")
     module_map = {
+        "galaxy-cli": "cli_anything.galaxy.galaxy_cli",
         "cli-galaxy": "cli_anything.galaxy.galaxy_cli",
         "cli-anything-galaxy": "cli_anything.galaxy.galaxy_cli",
     }
@@ -206,7 +207,7 @@ class TestToolE2E:
 # ── CLI Subprocess Tests ─────────────────────────────────────────────────
 
 class TestCLISubprocess:
-    CLI_BASE = _resolve_cli("cli-galaxy")
+    CLI_BASE = _resolve_cli("galaxy-cli")
 
     def _run(self, args, check=True):
         return subprocess.run(
@@ -267,7 +268,7 @@ class TestCLISubprocess:
 @needs_galaxy
 class TestCLISubprocessE2E:
     """Subprocess E2E tests that hit the real Galaxy server."""
-    CLI_BASE = _resolve_cli("cli-galaxy")
+    CLI_BASE = _resolve_cli("galaxy-cli")
 
     def _run(self, args, check=True):
         return subprocess.run(

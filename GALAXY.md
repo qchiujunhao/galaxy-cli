@@ -78,11 +78,11 @@ export GALAXY_URL=https://usegalaxy.org
 export GALAXY_API_KEY=your-api-key
 
 # CLI flags
-cli-galaxy --url https://usegalaxy.org --api-key your-key
+galaxy-cli --url https://usegalaxy.org --api-key your-key
 
-# Config file (~/.cli-galaxy/config.json)
-cli-galaxy config set-url https://usegalaxy.org
-cli-galaxy config set-key your-api-key
+# Config file (~/.galaxy-cli/config.json)
+galaxy-cli config set-url https://usegalaxy.org
+galaxy-cli config set-key your-api-key
 ```
 
 ## Backend Integration

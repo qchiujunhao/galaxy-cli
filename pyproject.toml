@@ -3,7 +3,7 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cli-galaxy"
+name = "galaxy-cli"
 dynamic = ["version"]
 description = "CLI harness for the Galaxy bioinformatics platform"
 readme = "README.md"
@@ -26,7 +26,7 @@ classifiers = [
 ]
 
 [project.scripts]
-cli-galaxy = "cli_anything.galaxy.galaxy_cli:main"
+galaxy-cli = "cli_anything.galaxy.galaxy_cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "cli_anything.galaxy.__version__" }

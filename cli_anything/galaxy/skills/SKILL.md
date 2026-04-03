@@ -1,16 +1,16 @@
 ---
-name: "cli-galaxy"
+name: "galaxy-cli"
 description: "CLI harness for Galaxy bioinformatics platform — manage histories, datasets, tools, workflows, jobs, and libraries via command line"
 ---
 
-# cli-galaxy
+# galaxy-cli
 
 CLI harness for the Galaxy bioinformatics platform. Wraps Galaxy's REST API to
 provide full command-line access to all Galaxy operations.
 
 ## Prerequisites
 
-- **Python 3.9+** with `pip install cli-galaxy`
+- **Python 3.9+** with `pip install galaxy-cli`
 - **A running Galaxy server** (e.g., https://usegalaxy.org)
 - **Galaxy API key** from `<galaxy-url>/user/api_key`
 
@@ -22,15 +22,15 @@ export GALAXY_URL=https://usegalaxy.org
 export GALAXY_API_KEY=your-api-key
 
 # Or use config commands
-cli-galaxy config set-url https://usegalaxy.org
-cli-galaxy config set-key your-api-key
-cli-galaxy config test
+galaxy-cli config set-url https://usegalaxy.org
+galaxy-cli config set-key your-api-key
+galaxy-cli config test
 ```
 
 ## Command Syntax
 
 ```
-cli-galaxy [--json] [--url URL] [--api-key KEY] COMMAND [SUBCOMMAND] [ARGS]
+galaxy-cli [--json] [--url URL] [--api-key KEY] COMMAND [SUBCOMMAND] [ARGS]
 ```
 
 Use `--json` flag for machine-readable JSON output (recommended for agents).
@@ -124,33 +124,33 @@ Use `--json` flag for machine-readable JSON output (recommended for agents).
 ### Example 1: Upload and Analyze Data
 ```bash
 # Create a working history
-cli-galaxy --json history create "RNA-seq Analysis"
+galaxy-cli --json history create "RNA-seq Analysis"
 # Upload input data
-cli-galaxy --json dataset upload reads.fastq --file-type fastqsanger
+galaxy-cli --json dataset upload reads.fastq --file-type fastqsanger
 # Run FastQC
-cli-galaxy --json tool run fastqc -i input_file=DATASET_ID --wait
+galaxy-cli --json tool run fastqc -i input_file=DATASET_ID --wait
 # Check results
-cli-galaxy --json job show JOB_ID --full
+galaxy-cli --json job show JOB_ID --full
 ```
 
 ### Example 2: Run a Workflow
 ```bash
 # List available workflows
-cli-galaxy --json workflow list
+galaxy-cli --json workflow list
 # Show workflow inputs
-cli-galaxy --json workflow show WORKFLOW_ID
+galaxy-cli --json workflow show WORKFLOW_ID
 # Run with inputs
-cli-galaxy --json workflow run WORKFLOW_ID -i 0=DATASET_ID --wait
+galaxy-cli --json workflow run WORKFLOW_ID -i 0=DATASET_ID --wait
 # Check invocation
-cli-galaxy --json invocation show INVOCATION_ID
+galaxy-cli --json invocation show INVOCATION_ID
 ```
 
 ### Example 3: Download Results
 ```bash
 # List datasets in history
-cli-galaxy --json dataset list --history-id HISTORY_ID
+galaxy-cli --json dataset list --history-id HISTORY_ID
 # Download output
-cli-galaxy --json dataset download DATASET_ID ./output.tabular
+galaxy-cli --json dataset download DATASET_ID ./output.tabular
 ```
 
 ## Agent Guidance

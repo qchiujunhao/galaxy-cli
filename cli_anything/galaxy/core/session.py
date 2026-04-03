@@ -7,7 +7,7 @@ import fcntl
 import json
 from pathlib import Path
 
-DEFAULT_SESSION_DIR = Path.home() / ".cli-galaxy"
+DEFAULT_SESSION_DIR = Path.home() / ".galaxy-cli"
 DEFAULT_SESSION_FILE = DEFAULT_SESSION_DIR / "session.json"
 
 

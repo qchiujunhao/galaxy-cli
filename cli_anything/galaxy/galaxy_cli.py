@@ -1,4 +1,4 @@
-"""cli-galaxy: CLI harness for Galaxy bioinformatics platform.
+"""galaxy-cli: CLI harness for Galaxy bioinformatics platform.
 
 Provides stateful CLI and REPL access to a running Galaxy server via its REST API.
 """
@@ -69,7 +69,7 @@ def _require_history(ctx):
 @click.option("--api-key", envvar="GALAXY_API_KEY", help="Galaxy API key")
 @click.option("--history-id", default=None, help="Override current history ID")
 @click.option("--json", "json_mode", is_flag=True, help="Output JSON for machine parsing")
-@click.version_option(__version__, prog_name="cli-galaxy")
+@click.version_option(__version__, prog_name="galaxy-cli")
 @click.pass_context
 def cli(ctx, url, api_key, history_id, json_mode):
     """CLI harness for Galaxy bioinformatics platform.

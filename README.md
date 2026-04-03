@@ -1,11 +1,11 @@
-# cli-galaxy
+# galaxy-cli
 
 CLI harness for the [Galaxy](https://galaxyproject.org/) bioinformatics platform.
 It wraps Galaxy's REST API to provide command-line and REPL access to histories,
 datasets, tools, workflows, jobs, and libraries.
 
 This project was initially generated with `cli-anything` and then refined into
-the standalone `cli-galaxy` package.
+the standalone `galaxy-cli` package.
 
 ## Prerequisites
 
@@ -18,11 +18,11 @@ the standalone `cli-galaxy` package.
 Install from PyPI with `uv` or `pip`:
 
 ```bash
-uv tool install cli-galaxy
+uv tool install galaxy-cli
 ```
 
 ```bash
-python3 -m pip install cli-galaxy
+python3 -m pip install galaxy-cli
 ```
 
 For local development from this repository:
@@ -34,8 +34,8 @@ python3 -m pip install .
 Verify installation:
 
 ```bash
-which cli-galaxy
-cli-galaxy --version
+which galaxy-cli
+galaxy-cli --version
 ```
 
 ## Configuration
@@ -46,22 +46,22 @@ Set your Galaxy server URL and API key:
 export GALAXY_URL=https://usegalaxy.org
 export GALAXY_API_KEY=your-api-key
 
-cli-galaxy config test
+galaxy-cli config test
 ```
 
 ## Usage
 
 ```bash
-cli-galaxy history list
-cli-galaxy history create "My Analysis"
-cli-galaxy tool search "bowtie"
-cli-galaxy --json workflow list
+galaxy-cli history list
+galaxy-cli history create "My Analysis"
+galaxy-cli tool search "bowtie"
+galaxy-cli --json workflow list
 ```
 
 Run the REPL:
 
 ```bash
-cli-galaxy
+galaxy-cli
 ```
 
 ## Tests

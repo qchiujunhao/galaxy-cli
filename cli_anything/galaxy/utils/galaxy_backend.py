@@ -11,7 +11,7 @@ from urllib.parse import urljoin
 
 import requests
 
-DEFAULT_CONFIG_DIR = Path.home() / ".cli-galaxy"
+DEFAULT_CONFIG_DIR = Path.home() / ".galaxy-cli"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.json"
 DEFAULT_TIMEOUT = 60
 
@@ -26,7 +26,7 @@ class GalaxyClient:
     Authentication priority:
     1. Explicit url/api_key parameters
     2. Environment variables GALAXY_URL / GALAXY_API_KEY
-    3. Config file ~/.cli-galaxy/config.json
+    3. Config file ~/.galaxy-cli/config.json
     """
 
     def __init__(self, url=None, api_key=None, timeout=DEFAULT_TIMEOUT):
@@ -39,14 +39,14 @@ class GalaxyClient:
                 "Galaxy server URL not configured. Set it with:\n"
                 "  export GALAXY_URL=https://usegalaxy.org\n"
                 "  # or\n"
-                "  cli-galaxy config set-url https://usegalaxy.org"
+                "  galaxy-cli config set-url https://usegalaxy.org"
             )
         if not self.api_key:
             raise GalaxyBackendError(
                 "Galaxy API key not configured. Set it with:\n"
                 "  export GALAXY_API_KEY=your-api-key\n"
                 "  # or\n"
-                "  cli-galaxy config set-key your-api-key\n"
+                "  galaxy-cli config set-key your-api-key\n"
                 "\n"
                 "Get your API key from: <your-galaxy-url>/user/api_key"
             )

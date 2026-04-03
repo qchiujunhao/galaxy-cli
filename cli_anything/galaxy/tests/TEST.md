@@ -100,8 +100,8 @@ CLI command -> HTTP request -> Galaxy API -> response parsing.
 - `test_show_tool_details` — inspect tool inputs
 
 ### CLI Subprocess Tests
-- `test_help` — `cli-galaxy --help` returns 0
-- `test_version` — `cli-galaxy --version` returns version
+- `test_help` — `galaxy-cli --help` returns 0
+- `test_version` — `galaxy-cli --version` returns version
 - `test_config_show_json` — `--json config show` returns valid JSON
 - `test_history_list_json` — `--json history list` returns JSON array
 - `test_tool_list_json` — `--json tool list` returns JSON array

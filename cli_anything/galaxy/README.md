@@ -1,11 +1,11 @@
-# cli-galaxy
+# galaxy-cli
 
 CLI harness for the [Galaxy](https://galaxyproject.org/) bioinformatics platform.
 Wraps Galaxy's REST API to provide full command-line and REPL access to histories,
 datasets, tools, workflows, jobs, and libraries.
 
 This package was initially generated with `cli-anything` and then refined into
-the standalone `cli-galaxy` package.
+the standalone `galaxy-cli` package.
 
 ## Prerequisites
 
@@ -20,11 +20,11 @@ the standalone `cli-galaxy` package.
 Install from PyPI with `uv` or `pip`:
 
 ```bash
-uv tool install cli-galaxy
+uv tool install galaxy-cli
 ```
 
 ```bash
-python3 -m pip install cli-galaxy
+python3 -m pip install galaxy-cli
 ```
 
 For local development from this repository:
@@ -37,8 +37,8 @@ python3 -m pip install .
 Verify installation:
 
 ```bash
-which cli-galaxy
-cli-galaxy --version
+which galaxy-cli
+galaxy-cli --version
 ```
 
 ## Configuration
@@ -51,11 +51,11 @@ export GALAXY_URL=https://usegalaxy.org
 export GALAXY_API_KEY=your-api-key
 
 # Or use the config commands
-cli-galaxy config set-url https://usegalaxy.org
-cli-galaxy config set-key your-api-key
+galaxy-cli config set-url https://usegalaxy.org
+galaxy-cli config set-key your-api-key
 
 # Test connection
-cli-galaxy config test
+galaxy-cli config test
 ```
 
 ## Usage
@@ -64,41 +64,41 @@ cli-galaxy config test
 
 ```bash
 # List histories
-cli-galaxy history list
+galaxy-cli history list
 
 # Create a history
-cli-galaxy history create "My Analysis"
+galaxy-cli history create "My Analysis"
 
 # Upload a file
-cli-galaxy dataset upload data.fastq --history-id abc123
+galaxy-cli dataset upload data.fastq --history-id abc123
 
 # Search for tools
-cli-galaxy tool search "bowtie"
+galaxy-cli tool search "bowtie"
 
 # Run a tool
-cli-galaxy tool run toolshed.g2.bx.psu.edu/repos/.../bowtie2 \
+galaxy-cli tool run toolshed.g2.bx.psu.edu/repos/.../bowtie2 \
   --history-id abc123 -i input=dataset-id
 
 # Check job status
-cli-galaxy job show job-id
+galaxy-cli job show job-id
 
 # Run a workflow
-cli-galaxy workflow run workflow-id -i 0=dataset-id
+galaxy-cli workflow run workflow-id -i 0=dataset-id
 ```
 
 ### JSON output (for agents)
 
 ```bash
-cli-galaxy --json history list
-cli-galaxy --json tool show bowtie2
+galaxy-cli --json history list
+galaxy-cli --json tool show bowtie2
 ```
 
 ### Interactive REPL
 
 ```bash
-cli-galaxy
+galaxy-cli
 # Enters interactive mode
-# Type commands without the "cli-galaxy" prefix
+# Type commands without the "galaxy-cli" prefix
 ```
 
 ## Command Groups
