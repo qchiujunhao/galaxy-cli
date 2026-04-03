@@ -5,9 +5,8 @@ All tests use mock HTTP responses — no Galaxy server required.
 
 import json
 import os
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
@@ -48,8 +47,19 @@ class TestConfig:
         with patch.object(gb, "DEFAULT_CONFIG_FILE", cfg_file):
             result = show_config()
             assert result["url"] == "https://g.org"
-            assert "abcdef12" in result["api_key"]  # Masked
-            assert "789" in result["api_key"]
+            assert result["api_key"] == "***...6789"
+
+    def test_save_config_restricts_permissions(self, tmp_path):
+        from cli_anything.galaxy.core.config import set_key
+        from cli_anything.galaxy.utils import galaxy_backend as gb
+
+        cfg_file = tmp_path / "config.json"
+        with patch.object(gb, "DEFAULT_CONFIG_FILE", cfg_file), \
+             patch.object(gb, "DEFAULT_CONFIG_DIR", tmp_path):
+            set_key("abcdef1234567890")
+
+        assert cfg_file.stat().st_mode & 0o777 == 0o600
+        assert tmp_path.stat().st_mode & 0o777 == 0o700
 
     def test_show_config_empty(self, tmp_path):
         from cli_anything.galaxy.core.config import show_config
@@ -284,27 +294,22 @@ class TestTool:
             [
                 "toolshed.g2.bx.psu.edu/repos/devteam/bowtie2/bowtie2/2.5.5+galaxy0",
             ],
-            [
-                {
-                    "id": "fastqc",
-                    "name": "FastQC",
-                    "version": "0.73",
-                    "description": "Quality control",
-                    "panel_section_name": "NGS",
-                },
-                {
-                    "id": "toolshed.g2.bx.psu.edu/repos/devteam/bowtie2/bowtie2/2.5.5+galaxy0",
-                    "name": "Bowtie2",
-                    "version": "2.5.5",
-                    "description": "Map with Bowtie2",
-                    "panel_section_name": "NGS Mapping",
-                },
-            ],
+            {
+                "id": "toolshed.g2.bx.psu.edu/repos/devteam/bowtie2/bowtie2/2.5.5+galaxy0",
+                "name": "Bowtie2",
+                "version": "2.5.5",
+                "description": "Map with Bowtie2",
+                "panel_section_name": "NGS Mapping",
+            },
         ]
 
         result = list_tools(client, query="bowtie")
         assert len(result) == 1
         assert result[0]["name"] == "Bowtie2"
+        assert client.get.call_args_list == [
+            (("tools",), {"params": {"in_panel": False, "q": "bowtie"}}),
+            (("tools/toolshed.g2.bx.psu.edu/repos/devteam/bowtie2/bowtie2/2.5.5+galaxy0",), {}),
+        ]
 
     def test_search_tools(self):
         from cli_anything.galaxy.core.tool import search_tools
@@ -343,6 +348,10 @@ class TestTool:
         result = search_tools(client, "tabular machine learning")
         assert len(result) == 1
         assert result[0]["id"] == "sklearn_train_regression"
+        assert client.get.call_args_list == [
+            (("tools",), {"params": {"in_panel": False, "q": "tabular machine learning"}}),
+            (("tools",), {"params": {"in_panel": False}}),
+        ]
 
     def test_show_tool(self):
         from cli_anything.galaxy.core.tool import show_tool
@@ -710,3 +719,21 @@ class TestGalaxyBackend:
             client = GalaxyClient()
             assert client._api_url("histories") == "https://galaxy.example.org/api/histories"
             assert client._api_url("/tools") == "https://galaxy.example.org/api/tools"
+
+    def test_upload_file_closes_handle_on_request_error(self, tmp_path):
+        from cli_anything.galaxy.utils.galaxy_backend import GalaxyBackendError, GalaxyClient
+
+        upload_file = tmp_path / "reads.fastq"
+        upload_file.write_text("@r1\nACGT\n+\n!!!!\n")
+        client = GalaxyClient(url="https://galaxy.example.org", api_key="testkey123")
+        observed = {}
+
+        def fake_post(*args, **kwargs):
+            observed["closed_during_request"] = kwargs["files"]["files_0|file_data"][1].closed
+            raise requests.Timeout("slow upload")
+
+        with patch("cli_anything.galaxy.utils.galaxy_backend.requests.post", side_effect=fake_post):
+            with pytest.raises(GalaxyBackendError, match="timed out"):
+                client.upload_file(str(upload_file), "h1")
+
+        assert observed["closed_during_request"] is False

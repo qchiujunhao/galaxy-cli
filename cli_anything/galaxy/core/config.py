@@ -21,7 +21,7 @@ def show_config():
     result = {"url": cfg.get("url", "(not set)"), "api_key": "(not set)"}
     key = cfg.get("api_key")
     if key:
-        result["api_key"] = key[:8] + "..." + key[-4:] if len(key) > 12 else "***"
+        result["api_key"] = f"***...{key[-4:]}" if len(key) >= 4 else "***"
     return result
 
 

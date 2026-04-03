@@ -3,29 +3,28 @@
 Tracks current history, last job, preferences across CLI invocations.
 """
 
-import fcntl
 import json
+import tempfile
 from pathlib import Path
 
 DEFAULT_SESSION_DIR = Path.home() / ".galaxy-cli"
 DEFAULT_SESSION_FILE = DEFAULT_SESSION_DIR / "session.json"
 
 
-def _locked_save_json(path, data):
-    """Save JSON with exclusive file locking to prevent corruption."""
+def _write_json(path, data):
+    """Save JSON atomically to avoid partial writes."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        path.write_text("{}")
-    with open(path, "r+") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            f.seek(0)
-            f.truncate()
-            json.dump(data, f, indent=2)
-            f.flush()
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        dir=path.parent,
+        delete=False,
+        encoding="utf-8",
+    ) as handle:
+        json.dump(data, handle, indent=2)
+        handle.flush()
+        temp_path = Path(handle.name)
+    temp_path.replace(path)
 
 
 def load_session(session_path=None):
@@ -48,7 +47,7 @@ def load_session(session_path=None):
 def save_session(session_data, session_path=None):
     """Save the current session state."""
     path = Path(session_path) if session_path else DEFAULT_SESSION_FILE
-    _locked_save_json(path, session_data)
+    _write_json(path, session_data)
     return {"status": "saved", "path": str(path)}
 
 

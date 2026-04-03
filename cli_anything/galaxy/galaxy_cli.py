@@ -25,12 +25,26 @@ from cli_anything.galaxy.core import (
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
-_JSON_MODE = False
+def _json_mode_enabled():
+    """Return whether the current Click context should emit JSON."""
+    ctx = click.get_current_context(silent=True)
+    while ctx is not None:
+        if ctx.obj and "json_mode" in ctx.obj:
+            return bool(ctx.obj["json_mode"])
+        ctx = ctx.parent
+    return False
+
+
+def _normalize_repl_args(args, default_json_mode):
+    """Apply REPL default JSON mode unless the command overrides it."""
+    if default_json_mode and "--json" not in args and "--no-json" not in args:
+        return ["--json"] + args
+    return args
 
 
 def _output(data, human_func=None):
     """Output data as JSON or human-readable."""
-    if _JSON_MODE:
+    if _json_mode_enabled():
         click.echo(json.dumps(data, indent=2, default=str))
     elif human_func:
         human_func(data)
@@ -68,7 +82,7 @@ def _require_history(ctx):
 @click.option("--url", envvar="GALAXY_URL", help="Galaxy server URL")
 @click.option("--api-key", envvar="GALAXY_API_KEY", help="Galaxy API key")
 @click.option("--history-id", default=None, help="Override current history ID")
-@click.option("--json", "json_mode", is_flag=True, help="Output JSON for machine parsing")
+@click.option("--json/--no-json", "json_mode", default=False, help="Output JSON for machine parsing")
 @click.version_option(__version__, prog_name="galaxy-cli")
 @click.pass_context
 def cli(ctx, url, api_key, history_id, json_mode):
@@ -77,12 +91,11 @@ def cli(ctx, url, api_key, history_id, json_mode):
     Connect to a running Galaxy server and manage histories, datasets,
     tools, workflows, and jobs from the command line.
     """
-    global _JSON_MODE
-    _JSON_MODE = json_mode
     ctx.ensure_object(dict)
     ctx.obj["url"] = url
     ctx.obj["api_key"] = api_key
     ctx.obj["history_id"] = history_id
+    ctx.obj["json_mode"] = json_mode
     # Lazily create client — only when a subcommand needs it
     ctx.obj["client"] = None
     if url or api_key:
@@ -848,12 +861,10 @@ def repl(ctx):
             skin.error(f"Parse error: {exc}")
             continue
 
-        # Inject --json if parent context has it
-        if _JSON_MODE and "--json" not in args:
-            args = ["--json"] + args
+        args = _normalize_repl_args(args, ctx.obj.get("json_mode", False))
 
         try:
-            cli.main(args=args, standalone_mode=False, **{"obj": ctx.obj})
+            cli.main(args=args, standalone_mode=False, obj=dict(ctx.obj))
         except SystemExit:
             pass
         except click.UsageError as exc:
@@ -868,10 +879,11 @@ def repl(ctx):
 
 def main():
     """Main entry point."""
+    root_obj = {"json_mode": "--json" in sys.argv[1:] and "--no-json" not in sys.argv[1:]}
     try:
-        cli(obj={})
+        cli(obj=root_obj)
     except GalaxyBackendError as exc:
-        if _JSON_MODE:
+        if root_obj["json_mode"]:
             click.echo(json.dumps({"error": str(exc)}))
         else:
             click.echo(f"Error: {exc}", err=True)

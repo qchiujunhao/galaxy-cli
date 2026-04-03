@@ -6,6 +6,7 @@ Galaxy is a hard dependency: the CLI is useless without a reachable server.
 
 import json
 import os
+import stat
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -68,7 +69,8 @@ class GalaxyClient:
     @staticmethod
     def save_config(key, value):
         """Save a configuration value to the config file."""
-        DEFAULT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        DEFAULT_CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(DEFAULT_CONFIG_DIR, 0o700)
         data = {}
         if DEFAULT_CONFIG_FILE.exists():
             try:
@@ -77,6 +79,7 @@ class GalaxyClient:
                 pass
         data[key] = value
         DEFAULT_CONFIG_FILE.write_text(json.dumps(data, indent=2))
+        os.chmod(DEFAULT_CONFIG_FILE, stat.S_IRUSR | stat.S_IWUSR)
 
     @staticmethod
     def load_config():
@@ -209,30 +212,31 @@ class GalaxyClient:
                 "files_0|to_posix_lines": "Yes",
             }),
         }
-        files = {"files_0|file_data": (file_path.name, open(file_path, "rb"))}
-        try:
-            resp = requests.post(
-                self._api_url("tools"),
-                headers=self._upload_headers(),
-                data=payload,
-                files=files,
-                timeout=max(self.timeout, 300),  # Upload may be slow
-            )
-        except requests.exceptions.SSLError as exc:
-            raise GalaxyBackendError(
-                f"TLS/SSL handshake failed while connecting to Galaxy at {self.url}\n"
-                "This usually means your Python runtime has an outdated SSL library.\n"
-                "Use a modern Python build, such as uv-managed Python or Homebrew Python 3.10+."
-            ) from exc
-        except requests.ConnectionError as exc:
-            raise GalaxyBackendError(
-                f"Cannot connect to Galaxy at {self.url}\n"
-                "Ensure the Galaxy server is running and reachable."
-            ) from exc
-        except requests.Timeout as exc:
-            raise GalaxyBackendError(
-                f"Request to Galaxy timed out after {max(self.timeout, 300)}s"
-            ) from exc
+        with open(file_path, "rb") as handle:
+            files = {"files_0|file_data": (file_path.name, handle)}
+            try:
+                resp = requests.post(
+                    self._api_url("tools"),
+                    headers=self._upload_headers(),
+                    data=payload,
+                    files=files,
+                    timeout=max(self.timeout, 300),  # Upload may be slow
+                )
+            except requests.exceptions.SSLError as exc:
+                raise GalaxyBackendError(
+                    f"TLS/SSL handshake failed while connecting to Galaxy at {self.url}\n"
+                    "This usually means your Python runtime has an outdated SSL library.\n"
+                    "Use a modern Python build, such as uv-managed Python or Homebrew Python 3.10+."
+                ) from exc
+            except requests.ConnectionError as exc:
+                raise GalaxyBackendError(
+                    f"Cannot connect to Galaxy at {self.url}\n"
+                    "Ensure the Galaxy server is running and reachable."
+                ) from exc
+            except requests.Timeout as exc:
+                raise GalaxyBackendError(
+                    f"Request to Galaxy timed out after {max(self.timeout, 300)}s"
+                ) from exc
         return self._handle_response(resp)
 
     def download_dataset(self, dataset_id, output_path):

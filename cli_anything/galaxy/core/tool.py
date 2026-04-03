@@ -24,26 +24,11 @@ def _normalize_tool_dict(tool, section_id=None):
     }
 
 
-def _resolve_search_hits(client, tools, section_id=None):
+def _resolve_search_hits(client, tools):
     """Resolve string-only search hits into full tool records."""
     if not tools or not all(isinstance(tool, str) for tool in tools):
         return tools
-
-    all_tools = client.get("tools", params={"in_panel": False})
-    by_id = {}
-    for tool in all_tools:
-        if isinstance(tool, dict) and tool.get("id"):
-            by_id[tool["id"]] = tool
-
-    resolved = []
-    for tool_id in tools:
-        tool = by_id.get(tool_id)
-        if tool is None:
-            continue
-        if section_id and tool.get("panel_section_id") != section_id:
-            continue
-        resolved.append(tool)
-    return resolved
+    return [client.get(f"tools/{tool_id}") for tool_id in tools]
 
 
 def list_tools(client, query=None, section_id=None):
@@ -52,7 +37,7 @@ def list_tools(client, query=None, section_id=None):
     if query:
         params["q"] = query
     tools = client.get("tools", params=params)
-    tools = _resolve_search_hits(client, tools, section_id=section_id)
+    tools = _resolve_search_hits(client, tools)
     results = []
     for t in tools:
         if isinstance(t, dict):
