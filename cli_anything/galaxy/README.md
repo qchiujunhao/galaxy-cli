@@ -17,9 +17,21 @@ the standalone `cli-galaxy` package.
 
 ## Installation
 
+Install from PyPI with `uv` or `pip`:
+
+```bash
+uv tool install cli-galaxy
+```
+
+```bash
+python3 -m pip install cli-galaxy
+```
+
+For local development from this repository:
+
 ```bash
 cd agent-harness
-pip install -e .
+python3 -m pip install .
 ```
 
 Verify installation:

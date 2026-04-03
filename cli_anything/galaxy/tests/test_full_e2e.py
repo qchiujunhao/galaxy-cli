@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,23 @@ def _has_galaxy_server():
         return resp.status_code == 200
     except Exception:
         return False
+
+
+def _wait_for_dataset_ready(client, dataset_id, history_id=None, max_wait=180, poll_interval=5):
+    """Wait for a dataset to reach a downloadable terminal state."""
+    from cli_anything.galaxy.core.dataset import show_dataset
+
+    elapsed = 0
+    while elapsed < max_wait:
+        info = show_dataset(client, dataset_id, history_id=history_id)
+        state = info.get("state", "")
+        if state == "ok" and info.get("file_size", 0) > 0:
+            return info
+        if state in {"error", "failed", "discarded", "deleted"}:
+            raise AssertionError(f"Dataset {dataset_id} entered terminal failure state: {state}")
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+    raise AssertionError(f"Dataset {dataset_id} did not become ready within {max_wait}s")
 
 
 needs_galaxy = pytest.mark.skipif(
@@ -120,9 +138,10 @@ class TestDatasetE2E:
     def test_upload_and_download(self):
         from cli_anything.galaxy.core.history import create_history, delete_history
         from cli_anything.galaxy.core.dataset import upload_dataset, download_dataset
-        from cli_anything.galaxy.core.job import wait_for_job
 
         client = self._client()
+        test_file = None
+        out_path = None
 
         # Create history
         hist = create_history(client, name="CLI-Upload-Test")
@@ -144,11 +163,10 @@ class TestDatasetE2E:
                 out_path = out.name
 
             if result.get("id"):
-                # Wait for upload to complete
-                import time
-                time.sleep(5)
+                ready = _wait_for_dataset_ready(client, result["id"], history_id=hid)
                 dl = download_dataset(client, result["id"], out_path)
                 assert dl["size"] > 0
+                assert dl["size"] == ready["file_size"]
                 print(f"  Downloaded: {dl['output']} ({dl['size']} bytes)")
         finally:
             delete_history(client, hid)

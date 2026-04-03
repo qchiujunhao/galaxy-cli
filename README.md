@@ -15,13 +15,26 @@ the standalone `cli-galaxy` package.
 
 ## Installation
 
+Install from PyPI with `uv` or `pip`:
+
 ```bash
-python3 -m pip install -e .
+uv tool install cli-galaxy
+```
+
+```bash
+python3 -m pip install cli-galaxy
+```
+
+For local development from this repository:
+
+```bash
+python3 -m pip install .
 ```
 
 Verify installation:
 
 ```bash
+which cli-galaxy
 cli-galaxy --version
 ```
 

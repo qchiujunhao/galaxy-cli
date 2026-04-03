@@ -97,6 +97,31 @@ class GalaxyClient:
     def _api_url(self, path):
         return urljoin(self.url, f"api/{path.lstrip('/')}")
 
+    def _request(self, method, path, **kwargs):
+        """Issue an HTTP request and normalize transport-layer failures."""
+        try:
+            return requests.request(
+                method,
+                self._api_url(path),
+                timeout=self.timeout,
+                **kwargs,
+            )
+        except requests.exceptions.SSLError as exc:
+            raise GalaxyBackendError(
+                f"TLS/SSL handshake failed while connecting to Galaxy at {self.url}\n"
+                "This usually means your Python runtime has an outdated SSL library.\n"
+                "Use a modern Python build, such as uv-managed Python or Homebrew Python 3.10+."
+            ) from exc
+        except requests.ConnectionError as exc:
+            raise GalaxyBackendError(
+                f"Cannot connect to Galaxy at {self.url}\n"
+                "Ensure the Galaxy server is running and reachable."
+            ) from exc
+        except requests.Timeout as exc:
+            raise GalaxyBackendError(
+                f"Request to Galaxy timed out after {self.timeout}s"
+            ) from exc
+
     def _handle_response(self, resp):
         """Parse response and raise on errors."""
         try:
@@ -108,15 +133,6 @@ class GalaxyClient:
             except (ValueError, KeyError):
                 msg = resp.text[:500]
             raise GalaxyBackendError(f"Galaxy API error ({resp.status_code}): {msg}") from exc
-        except requests.ConnectionError as exc:
-            raise GalaxyBackendError(
-                f"Cannot connect to Galaxy at {self.url}\n"
-                "Ensure the Galaxy server is running and reachable."
-            ) from exc
-        except requests.Timeout as exc:
-            raise GalaxyBackendError(
-                f"Request to Galaxy timed out after {self.timeout}s"
-            ) from exc
 
         if resp.status_code == 204:
             return {}
@@ -127,41 +143,52 @@ class GalaxyClient:
 
     def get(self, path, params=None):
         """GET request to Galaxy API."""
-        resp = requests.get(
-            self._api_url(path), headers=self._headers(),
-            params=params, timeout=self.timeout,
+        resp = self._request(
+            "GET",
+            path,
+            headers=self._headers(),
+            params=params,
         )
         return self._handle_response(resp)
 
     def post(self, path, data=None, json_data=None):
         """POST request to Galaxy API."""
-        resp = requests.post(
-            self._api_url(path), headers=self._headers(),
-            data=data, json=json_data, timeout=self.timeout,
+        resp = self._request(
+            "POST",
+            path,
+            headers=self._headers(),
+            data=data,
+            json=json_data,
         )
         return self._handle_response(resp)
 
     def put(self, path, json_data=None):
         """PUT request to Galaxy API."""
-        resp = requests.put(
-            self._api_url(path), headers=self._headers(),
-            json=json_data, timeout=self.timeout,
+        resp = self._request(
+            "PUT",
+            path,
+            headers=self._headers(),
+            json=json_data,
         )
         return self._handle_response(resp)
 
     def patch(self, path, json_data=None):
         """PATCH request to Galaxy API."""
-        resp = requests.patch(
-            self._api_url(path), headers=self._headers(),
-            json=json_data, timeout=self.timeout,
+        resp = self._request(
+            "PATCH",
+            path,
+            headers=self._headers(),
+            json=json_data,
         )
         return self._handle_response(resp)
 
     def delete(self, path, json_data=None):
         """DELETE request to Galaxy API."""
-        resp = requests.delete(
-            self._api_url(path), headers=self._headers(),
-            json=json_data, timeout=self.timeout,
+        resp = self._request(
+            "DELETE",
+            path,
+            headers=self._headers(),
+            json=json_data,
         )
         return self._handle_response(resp)
 
@@ -183,22 +210,38 @@ class GalaxyClient:
             }),
         }
         files = {"files_0|file_data": (file_path.name, open(file_path, "rb"))}
-        resp = requests.post(
-            self._api_url("tools"),
-            headers=self._upload_headers(),
-            data=payload,
-            files=files,
-            timeout=max(self.timeout, 300),  # Upload may be slow
-        )
+        try:
+            resp = requests.post(
+                self._api_url("tools"),
+                headers=self._upload_headers(),
+                data=payload,
+                files=files,
+                timeout=max(self.timeout, 300),  # Upload may be slow
+            )
+        except requests.exceptions.SSLError as exc:
+            raise GalaxyBackendError(
+                f"TLS/SSL handshake failed while connecting to Galaxy at {self.url}\n"
+                "This usually means your Python runtime has an outdated SSL library.\n"
+                "Use a modern Python build, such as uv-managed Python or Homebrew Python 3.10+."
+            ) from exc
+        except requests.ConnectionError as exc:
+            raise GalaxyBackendError(
+                f"Cannot connect to Galaxy at {self.url}\n"
+                "Ensure the Galaxy server is running and reachable."
+            ) from exc
+        except requests.Timeout as exc:
+            raise GalaxyBackendError(
+                f"Request to Galaxy timed out after {max(self.timeout, 300)}s"
+            ) from exc
         return self._handle_response(resp)
 
     def download_dataset(self, dataset_id, output_path):
         """Download a dataset to a local file."""
-        resp = requests.get(
-            self._api_url(f"datasets/{dataset_id}/display"),
+        resp = self._request(
+            "GET",
+            f"datasets/{dataset_id}/display",
             headers=self._headers(),
             stream=True,
-            timeout=self.timeout,
         )
         try:
             resp.raise_for_status()

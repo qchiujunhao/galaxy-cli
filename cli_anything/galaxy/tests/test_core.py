@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
+import requests
 
 # ── Config Tests ─────────────────────────────────────────────────────────
 
@@ -70,6 +71,18 @@ class TestConfig:
         assert result["status"] == "connected"
         assert result["galaxy_version"] == "24.1"
         assert result["user"] == "testuser"
+
+    def test_ssl_error_is_normalized(self):
+        from cli_anything.galaxy.utils.galaxy_backend import GalaxyBackendError, GalaxyClient
+
+        client = GalaxyClient(url="https://usegalaxy.org", api_key="abc123")
+        with patch("cli_anything.galaxy.utils.galaxy_backend.requests.request") as mock_request:
+            mock_request.side_effect = requests.exceptions.SSLError("tls failure")
+            with pytest.raises(GalaxyBackendError) as exc:
+                client.get_version()
+
+        assert "TLS/SSL handshake failed" in str(exc.value)
+        assert "modern Python build" in str(exc.value)
 
 
 # ── History Tests ────────────────────────────────────────────────────────
@@ -263,6 +276,36 @@ class TestTool:
         assert len(result) == 2
         assert result[0]["id"] == "fastqc"
 
+    def test_list_tools_resolves_string_search_hits(self):
+        from cli_anything.galaxy.core.tool import list_tools
+
+        client = self._mock_client()
+        client.get.side_effect = [
+            [
+                "toolshed.g2.bx.psu.edu/repos/devteam/bowtie2/bowtie2/2.5.5+galaxy0",
+            ],
+            [
+                {
+                    "id": "fastqc",
+                    "name": "FastQC",
+                    "version": "0.73",
+                    "description": "Quality control",
+                    "panel_section_name": "NGS",
+                },
+                {
+                    "id": "toolshed.g2.bx.psu.edu/repos/devteam/bowtie2/bowtie2/2.5.5+galaxy0",
+                    "name": "Bowtie2",
+                    "version": "2.5.5",
+                    "description": "Map with Bowtie2",
+                    "panel_section_name": "NGS Mapping",
+                },
+            ],
+        ]
+
+        result = list_tools(client, query="bowtie")
+        assert len(result) == 1
+        assert result[0]["name"] == "Bowtie2"
+
     def test_search_tools(self):
         from cli_anything.galaxy.core.tool import search_tools
 
@@ -272,6 +315,34 @@ class TestTool:
         ]
         result = search_tools(client, "bowtie")
         assert len(result) == 1
+
+    def test_search_tools_keyword_fallback(self):
+        from cli_anything.galaxy.core.tool import search_tools
+
+        client = self._mock_client()
+        client.get.side_effect = [
+            [],
+            [
+                {
+                    "id": "sklearn_train_regression",
+                    "name": "Tabular Machine Learning Trainer",
+                    "version": "1.0",
+                    "description": "Train machine learning models on tabular datasets",
+                    "panel_section_name": "Machine Learning",
+                },
+                {
+                    "id": "tabular_filter",
+                    "name": "Filter Tabular",
+                    "version": "1.0",
+                    "description": "Filter rows in a tabular file",
+                    "panel_section_name": "Text Manipulation",
+                },
+            ],
+        ]
+
+        result = search_tools(client, "tabular machine learning")
+        assert len(result) == 1
+        assert result[0]["id"] == "sklearn_train_regression"
 
     def test_show_tool(self):
         from cli_anything.galaxy.core.tool import show_tool
