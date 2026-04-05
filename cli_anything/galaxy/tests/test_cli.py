@@ -1,5 +1,6 @@
 """CLI behavior tests."""
 
+import json
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -27,3 +28,49 @@ class TestCli:
         assert _normalize_repl_args(["history", "list"], True) == ["--json", "history", "list"]
         assert _normalize_repl_args(["--no-json", "history", "list"], True) == ["--no-json", "history", "list"]
         assert _normalize_repl_args(["--json", "history", "list"], False) == ["--json", "history", "list"]
+
+    def test_tool_run_wait_keeps_stdout_json_clean(self):
+        from cli_anything.galaxy.galaxy_cli import cli
+
+        runner = CliRunner(mix_stderr=False)
+        run_result = {
+            "tool_id": "fastp",
+            "jobs": [{"id": "job-1"}],
+            "outputs": [{"name": "trimmed.fastq.gz"}],
+        }
+        wait_result = {"id": "job-1", "state": "ok", "waited_seconds": 5}
+
+        with patch("cli_anything.galaxy.galaxy_cli._get_client", return_value=object()), \
+             patch("cli_anything.galaxy.galaxy_cli._require_history", return_value="hist-1"), \
+             patch("cli_anything.galaxy.galaxy_cli.tool_mod.run_tool", return_value=run_result), \
+             patch("cli_anything.galaxy.galaxy_cli.job_mod.wait_for_job", return_value=wait_result), \
+             patch("cli_anything.galaxy.galaxy_cli.session_mod.track_job"):
+            result = runner.invoke(
+                cli,
+                ["--json", "tool", "run", "fastp", "--wait"],
+            )
+
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["tool_id"] == "fastp"
+        assert data["wait_result"]["state"] == "ok"
+        assert result.stderr == "Waiting for job job-1...\n"
+
+    def test_invocation_wait_keeps_stdout_json_clean(self):
+        from cli_anything.galaxy.galaxy_cli import cli
+
+        runner = CliRunner(mix_stderr=False)
+        wait_result = {"id": "inv-1", "state": "scheduled", "waited_seconds": 12}
+
+        with patch("cli_anything.galaxy.galaxy_cli._get_client", return_value=object()), \
+             patch("cli_anything.galaxy.galaxy_cli.invocation_mod.wait_for_invocation", return_value=wait_result):
+            result = runner.invoke(
+                cli,
+                ["--json", "invocation", "wait", "inv-1"],
+            )
+
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["id"] == "inv-1"
+        assert data["state"] == "scheduled"
+        assert result.stderr == "Waiting for invocation inv-1...\n"

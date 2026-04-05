@@ -17,8 +17,40 @@ DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.json"
 DEFAULT_TIMEOUT = 60
 
 
+# Exit codes for structured error reporting
+EXIT_OK = 0
+EXIT_USER_ERROR = 1       # bad input, wrong parameter, missing argument
+EXIT_SERVER_ERROR = 2     # Galaxy 5xx, unexpected server response
+EXIT_AUTH_ERROR = 3       # 401/403, missing or invalid API key
+EXIT_TIMEOUT = 4          # connection or request timeout
+
+
 class GalaxyBackendError(Exception):
-    """Raised when the Galaxy backend returns an error or is unreachable."""
+    """Raised when the Galaxy backend returns an error or is unreachable.
+
+    Attributes:
+        category: Error category string for machine-readable output.
+        exit_code: Process exit code for this error type.
+        suggestion: Optional suggestion for how to fix the error.
+    """
+
+    def __init__(self, message, category="unknown", exit_code=EXIT_SERVER_ERROR,
+                 suggestion=None):
+        super().__init__(message)
+        self.category = category
+        self.exit_code = exit_code
+        self.suggestion = suggestion
+
+    def to_dict(self):
+        """Return a machine-readable error dict."""
+        d = {
+            "error": True,
+            "category": self.category,
+            "message": str(self),
+        }
+        if self.suggestion:
+            d["suggestion"] = self.suggestion
+        return d
 
 
 class GalaxyClient:
@@ -37,19 +69,17 @@ class GalaxyClient:
 
         if not self.url:
             raise GalaxyBackendError(
-                "Galaxy server URL not configured. Set it with:\n"
-                "  export GALAXY_URL=https://usegalaxy.org\n"
-                "  # or\n"
-                "  galaxy-cli config set-url https://usegalaxy.org"
+                "Galaxy server URL not configured.",
+                category="auth",
+                exit_code=EXIT_AUTH_ERROR,
+                suggestion="export GALAXY_URL=https://usegalaxy.org  or  galaxy-cli config set-url <url>",
             )
         if not self.api_key:
             raise GalaxyBackendError(
-                "Galaxy API key not configured. Set it with:\n"
-                "  export GALAXY_API_KEY=your-api-key\n"
-                "  # or\n"
-                "  galaxy-cli config set-key your-api-key\n"
-                "\n"
-                "Get your API key from: <your-galaxy-url>/user/api_key"
+                "Galaxy API key not configured.",
+                category="auth",
+                exit_code=EXIT_AUTH_ERROR,
+                suggestion="export GALAXY_API_KEY=<key>  or  galaxy-cli config set-key <key>",
             )
 
         # Normalize URL
@@ -111,18 +141,24 @@ class GalaxyClient:
             )
         except requests.exceptions.SSLError as exc:
             raise GalaxyBackendError(
-                f"TLS/SSL handshake failed while connecting to Galaxy at {self.url}\n"
-                "This usually means your Python runtime has an outdated SSL library.\n"
-                "Use a modern Python build, such as uv-managed Python or Homebrew Python 3.10+."
+                f"TLS/SSL handshake failed while connecting to Galaxy at {self.url}",
+                category="connection",
+                exit_code=EXIT_SERVER_ERROR,
+                suggestion="Use a modern Python build (uv-managed or Homebrew Python 3.10+).",
             ) from exc
         except requests.ConnectionError as exc:
             raise GalaxyBackendError(
-                f"Cannot connect to Galaxy at {self.url}\n"
-                "Ensure the Galaxy server is running and reachable."
+                f"Cannot connect to Galaxy at {self.url}",
+                category="connection",
+                exit_code=EXIT_SERVER_ERROR,
+                suggestion="Ensure the Galaxy server is running and reachable.",
             ) from exc
         except requests.Timeout as exc:
             raise GalaxyBackendError(
-                f"Request to Galaxy timed out after {self.timeout}s"
+                f"Request to Galaxy timed out after {self.timeout}s",
+                category="timeout",
+                exit_code=EXIT_TIMEOUT,
+                suggestion="Increase timeout or check server load.",
             ) from exc
 
     def _handle_response(self, resp):
@@ -135,7 +171,39 @@ class GalaxyClient:
                 msg = detail.get("err_msg") or detail.get("detail") or str(detail)
             except (ValueError, KeyError):
                 msg = resp.text[:500]
-            raise GalaxyBackendError(f"Galaxy API error ({resp.status_code}): {msg}") from exc
+
+            status = resp.status_code
+            if status in (401, 403):
+                raise GalaxyBackendError(
+                    f"Galaxy API auth error ({status}): {msg}",
+                    category="auth",
+                    exit_code=EXIT_AUTH_ERROR,
+                    suggestion="Check your API key with: galaxy-cli config test",
+                ) from exc
+            elif status == 404:
+                raise GalaxyBackendError(
+                    f"Galaxy API not found ({status}): {msg}",
+                    category="not_found",
+                    exit_code=EXIT_USER_ERROR,
+                ) from exc
+            elif status == 400:
+                raise GalaxyBackendError(
+                    f"Galaxy API bad request ({status}): {msg}",
+                    category="invalid_request",
+                    exit_code=EXIT_USER_ERROR,
+                ) from exc
+            elif status >= 500:
+                raise GalaxyBackendError(
+                    f"Galaxy server error ({status}): {msg}",
+                    category="server_error",
+                    exit_code=EXIT_SERVER_ERROR,
+                ) from exc
+            else:
+                raise GalaxyBackendError(
+                    f"Galaxy API error ({status}): {msg}",
+                    category="api_error",
+                    exit_code=EXIT_SERVER_ERROR,
+                ) from exc
 
         if resp.status_code == 204:
             return {}
@@ -199,7 +267,11 @@ class GalaxyClient:
         """Upload a file to a Galaxy history using the upload tool."""
         file_path = Path(file_path)
         if not file_path.exists():
-            raise GalaxyBackendError(f"File not found: {file_path}")
+            raise GalaxyBackendError(
+                f"File not found: {file_path}",
+                category="invalid_request",
+                exit_code=EXIT_USER_ERROR,
+            )
 
         payload = {
             "tool_id": "upload1",
@@ -212,6 +284,7 @@ class GalaxyClient:
                 "files_0|to_posix_lines": "Yes",
             }),
         }
+        upload_timeout = max(self.timeout, 300)
         with open(file_path, "rb") as handle:
             files = {"files_0|file_data": (file_path.name, handle)}
             try:
@@ -220,22 +293,28 @@ class GalaxyClient:
                     headers=self._upload_headers(),
                     data=payload,
                     files=files,
-                    timeout=max(self.timeout, 300),  # Upload may be slow
+                    timeout=upload_timeout,
                 )
             except requests.exceptions.SSLError as exc:
                 raise GalaxyBackendError(
-                    f"TLS/SSL handshake failed while connecting to Galaxy at {self.url}\n"
-                    "This usually means your Python runtime has an outdated SSL library.\n"
-                    "Use a modern Python build, such as uv-managed Python or Homebrew Python 3.10+."
+                    f"TLS/SSL handshake failed during upload to {self.url}",
+                    category="connection",
+                    exit_code=EXIT_SERVER_ERROR,
+                    suggestion="Use a modern Python build (uv-managed or Homebrew Python 3.10+).",
                 ) from exc
             except requests.ConnectionError as exc:
                 raise GalaxyBackendError(
-                    f"Cannot connect to Galaxy at {self.url}\n"
-                    "Ensure the Galaxy server is running and reachable."
+                    f"Cannot connect to Galaxy at {self.url}",
+                    category="connection",
+                    exit_code=EXIT_SERVER_ERROR,
+                    suggestion="Ensure the Galaxy server is running and reachable.",
                 ) from exc
             except requests.Timeout as exc:
                 raise GalaxyBackendError(
-                    f"Request to Galaxy timed out after {max(self.timeout, 300)}s"
+                    f"Upload timed out after {upload_timeout}s",
+                    category="timeout",
+                    exit_code=EXIT_TIMEOUT,
+                    suggestion="Increase timeout or try a smaller file.",
                 ) from exc
         return self._handle_response(resp)
 
@@ -251,7 +330,9 @@ class GalaxyClient:
             resp.raise_for_status()
         except requests.HTTPError as exc:
             raise GalaxyBackendError(
-                f"Failed to download dataset {dataset_id}: {resp.status_code}"
+                f"Failed to download dataset {dataset_id}: {resp.status_code}",
+                category="api_error",
+                exit_code=EXIT_SERVER_ERROR,
             ) from exc
 
         output_path = Path(output_path)

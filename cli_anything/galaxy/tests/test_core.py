@@ -92,7 +92,8 @@ class TestConfig:
                 client.get_version()
 
         assert "TLS/SSL handshake failed" in str(exc.value)
-        assert "modern Python build" in str(exc.value)
+        assert exc.value.category == "connection"
+        assert "modern Python build" in exc.value.suggestion
 
 
 # ── History Tests ────────────────────────────────────────────────────────

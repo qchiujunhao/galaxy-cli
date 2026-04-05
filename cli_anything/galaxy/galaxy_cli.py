@@ -10,7 +10,12 @@ import shlex
 import click
 
 from cli_anything.galaxy import __version__
-from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient, GalaxyBackendError
+from cli_anything.galaxy.utils.galaxy_backend import (
+    GalaxyClient,
+    GalaxyBackendError,
+    EXIT_OK,
+    EXIT_USER_ERROR,
+)
 from cli_anything.galaxy.core import (
     collection as collection_mod,
     config as config_mod,
@@ -51,6 +56,11 @@ def _output(data, human_func=None):
         human_func(data)
     else:
         click.echo(json.dumps(data, indent=2, default=str))
+
+
+def _progress(message):
+    """Emit progress text without corrupting JSON stdout."""
+    click.echo(message, err=_json_mode_enabled())
 
 
 def _get_client(ctx):
@@ -569,8 +579,10 @@ def tool_show(ctx, tool_id):
 @click.option("--history-id", default=None)
 @click.option("--input", "-i", "inputs", multiple=True, help="Tool input as key=value")
 @click.option("--wait", is_flag=True, help="Wait for job to complete")
+@click.option("--timeout", default=600, help="Max wait time in seconds (with --wait)")
+@click.option("--poll-interval", default=5, help="Seconds between status checks (with --wait)")
 @click.pass_context
-def tool_run(ctx, tool_id, history_id, inputs, wait):
+def tool_run(ctx, tool_id, history_id, inputs, wait, timeout, poll_interval):
     """Run a tool with given inputs."""
     client = _get_client(ctx)
     hid = history_id or _require_history(ctx)
@@ -585,8 +597,10 @@ def tool_run(ctx, tool_id, history_id, inputs, wait):
         job_id = result["jobs"][0]["id"]
         session_mod.track_job(job_id)
         if wait:
-            click.echo(f"Waiting for job {job_id}...")
-            wait_result = job_mod.wait_for_job(client, job_id)
+            _progress(f"Waiting for job {job_id}...")
+            wait_result = job_mod.wait_for_job(
+                client, job_id, max_wait=timeout, poll_interval=poll_interval,
+            )
             result["wait_result"] = wait_result
     _output(result, lambda d: click.echo(
         f"Tool {d['tool_id']} submitted. "
@@ -656,12 +670,13 @@ def job_cancel(ctx, job_id):
 @job_group.command("wait")
 @click.argument("job_id")
 @click.option("--timeout", default=600, help="Max wait time in seconds")
+@click.option("--poll-interval", default=5, help="Seconds between status checks")
 @click.pass_context
-def job_wait(ctx, job_id, timeout):
+def job_wait(ctx, job_id, timeout, poll_interval):
     """Wait for a job to complete."""
     client = _get_client(ctx)
-    click.echo(f"Waiting for job {job_id}...")
-    result = job_mod.wait_for_job(client, job_id, max_wait=timeout)
+    _progress(f"Waiting for job {job_id}...")
+    result = job_mod.wait_for_job(client, job_id, max_wait=timeout, poll_interval=poll_interval)
     _output(result, lambda d: click.echo(
         f"Job {d['id']}: {d['state']} (waited {d['waited_seconds']}s)"
     ))
@@ -766,8 +781,10 @@ def workflow_export(ctx, workflow_id, output_path):
 @click.option("--new-history", default=None, help="Create new history with this name")
 @click.option("--input", "-i", "inputs", multiple=True, help="Step input as step_index=dataset_id")
 @click.option("--wait", is_flag=True, help="Wait for invocation to complete")
+@click.option("--timeout", default=1800, help="Max wait time in seconds (default: 1800)")
+@click.option("--poll-interval", default=10, help="Seconds between status checks (default: 10)")
 @click.pass_context
-def workflow_run(ctx, workflow_id, history_id, new_history, inputs, wait):
+def workflow_run(ctx, workflow_id, history_id, new_history, inputs, wait, timeout, poll_interval):
     """Run a workflow."""
     client = _get_client(ctx)
     hid = history_id
@@ -785,8 +802,10 @@ def workflow_run(ctx, workflow_id, history_id, new_history, inputs, wait):
         new_history_name=new_history,
     )
     if wait and result.get("id"):
-        click.echo(f"Waiting for invocation {result['id']}...")
-        wait_result = invocation_mod.wait_for_invocation(client, result["id"])
+        _progress(f"Waiting for invocation {result['id']}...")
+        wait_result = invocation_mod.wait_for_invocation(
+            client, result["id"], max_wait=timeout, poll_interval=poll_interval,
+        )
         result["wait_result"] = wait_result
     _output(result, lambda d: click.echo(
         f"Invocation {d['id']} started (state: {d['state']})"
@@ -860,13 +879,16 @@ def invocation_cancel(ctx, invocation_id):
 
 @invocation_group.command("wait")
 @click.argument("invocation_id")
-@click.option("--timeout", default=1800, help="Max wait time in seconds")
+@click.option("--timeout", default=1800, help="Max wait time in seconds (default: 1800)")
+@click.option("--poll-interval", default=10, help="Seconds between status checks (default: 10)")
 @click.pass_context
-def invocation_wait(ctx, invocation_id, timeout):
+def invocation_wait(ctx, invocation_id, timeout, poll_interval):
     """Wait for an invocation to complete."""
     client = _get_client(ctx)
-    click.echo(f"Waiting for invocation {invocation_id}...")
-    result = invocation_mod.wait_for_invocation(client, invocation_id, max_wait=timeout)
+    _progress(f"Waiting for invocation {invocation_id}...")
+    result = invocation_mod.wait_for_invocation(
+        client, invocation_id, max_wait=timeout, poll_interval=poll_interval,
+    )
     _output(result, lambda d: click.echo(
         f"Invocation {d['id']}: {d['state']} (waited {d['waited_seconds']}s)"
     ))
@@ -1067,12 +1089,25 @@ def main():
     root_obj = {"json_mode": "--json" in sys.argv[1:] and "--no-json" not in sys.argv[1:]}
     try:
         cli(obj=root_obj)
-    except GalaxyBackendError as exc:
+    except click.UsageError as exc:
         if root_obj["json_mode"]:
-            click.echo(json.dumps({"error": str(exc)}))
+            click.echo(json.dumps({
+                "error": True,
+                "category": "usage_error",
+                "message": str(exc),
+            }))
         else:
             click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
+        sys.exit(EXIT_USER_ERROR)
+    except GalaxyBackendError as exc:
+        if root_obj["json_mode"]:
+            click.echo(json.dumps(exc.to_dict()))
+        else:
+            msg = str(exc)
+            if exc.suggestion:
+                msg += f"\n  Suggestion: {exc.suggestion}"
+            click.echo(f"Error: {msg}", err=True)
+        sys.exit(exc.exit_code)
 
 
 if __name__ == "__main__":
