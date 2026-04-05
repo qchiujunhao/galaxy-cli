@@ -90,19 +90,89 @@ def search_tools(client, query):
     return [tool for _, tool in ranked]
 
 
+def _normalize_input(inp):
+    """Normalize a single Galaxy tool input into a structured dict.
+
+    Handles all Galaxy parameter types: data, select, boolean, text, integer,
+    float, data_column, conditional, repeat, section, and others.
+    """
+    ptype = inp.get("type", "")
+    entry = {
+        "name": inp.get("name", ""),
+        "label": inp.get("label", ""),
+        "type": ptype,
+        "optional": inp.get("optional", False),
+        "help": inp.get("help", ""),
+    }
+
+    if ptype == "data":
+        entry["extensions"] = inp.get("extensions", [])
+        entry["multiple"] = inp.get("multiple", False)
+
+    elif ptype == "data_collection":
+        entry["extensions"] = inp.get("extensions", [])
+        entry["collection_type"] = inp.get("collection_type", "")
+
+    elif ptype == "select":
+        # options is [[label, value, selected], ...]
+        raw_opts = inp.get("options", [])
+        entry["options"] = [
+            {"label": o[0], "value": o[1]}
+            for o in raw_opts if isinstance(o, list) and len(o) >= 2
+        ]
+        entry["default"] = inp.get("value")
+        entry["multiple"] = inp.get("multiple", False)
+
+    elif ptype == "boolean":
+        entry["default"] = inp.get("value", False)
+        entry["truevalue"] = inp.get("truevalue", "true")
+        entry["falsevalue"] = inp.get("falsevalue", "false")
+
+    elif ptype in ("integer", "float"):
+        entry["default"] = inp.get("value")
+        entry["min"] = inp.get("min")
+        entry["max"] = inp.get("max")
+
+    elif ptype == "text":
+        entry["default"] = inp.get("value")
+
+    elif ptype == "data_column":
+        entry["default"] = inp.get("value")
+        entry["numerical"] = inp.get("numerical", False)
+        entry["multiple"] = inp.get("multiple", False)
+
+    elif ptype == "conditional":
+        test_param = inp.get("test_param", {})
+        entry["test_param"] = _normalize_input(test_param) if test_param else {}
+        entry["cases"] = []
+        for case in inp.get("cases", []):
+            case_entry = {
+                "value": case.get("value", ""),
+                "inputs": [_normalize_input(ci) for ci in case.get("inputs", [])],
+            }
+            entry["cases"].append(case_entry)
+
+    elif ptype == "repeat":
+        entry["inputs"] = [_normalize_input(ri) for ri in inp.get("inputs", [])]
+        entry["min"] = inp.get("min", 0)
+        entry["max"] = inp.get("max")
+        entry["default"] = inp.get("default", 0)
+
+    elif ptype == "section":
+        entry["inputs"] = [_normalize_input(si) for si in inp.get("inputs", [])]
+        entry["expanded"] = inp.get("expanded", False)
+
+    else:
+        # Unknown type — include default value if present
+        entry["default"] = inp.get("value")
+
+    return entry
+
+
 def show_tool(client, tool_id):
     """Show detailed info about a tool, including its inputs."""
     info = client.get(f"tools/{tool_id}", params={"io_details": True})
-    inputs = []
-    for inp in info.get("inputs", []):
-        inputs.append({
-            "name": inp.get("name", ""),
-            "label": inp.get("label", ""),
-            "type": inp.get("type", ""),
-            "value": inp.get("value", ""),
-            "optional": inp.get("optional", False),
-            "help": inp.get("help", ""),
-        })
+    inputs = [_normalize_input(inp) for inp in info.get("inputs", [])]
     outputs = []
     for out in info.get("outputs", []):
         outputs.append({

@@ -26,7 +26,7 @@ def list_workflows(client, published=False):
 
 
 def show_workflow(client, workflow_id):
-    """Show detailed info about a workflow."""
+    """Show detailed info about a workflow including input types."""
     info = client.get(f"workflows/{workflow_id}")
     steps = {}
     for step_id, step in info.get("steps", {}).items():
@@ -38,12 +38,39 @@ def show_workflow(client, workflow_id):
             "annotation": step.get("annotation", ""),
             "input_connections": step.get("input_connections", {}),
         }
+
+    # Build rich input descriptions from input steps
     inputs = {}
-    for inp_id, inp in info.get("inputs", {}).items():
-        inputs[inp_id] = {
+    raw_inputs = info.get("inputs", {})
+    raw_steps = info.get("steps", {})
+    for inp_id, inp in raw_inputs.items():
+        entry = {
             "label": inp.get("label", ""),
             "value": inp.get("value", ""),
         }
+        # Enrich from the corresponding step's type and tool_inputs
+        step = raw_steps.get(str(inp_id), {})
+        step_type = step.get("type", "")
+        tool_inputs = step.get("tool_inputs", {})
+        entry["step_type"] = step_type
+        entry["annotation"] = step.get("annotation", "")
+
+        if step_type == "data_input":
+            entry["input_type"] = "dataset"
+        elif step_type == "data_collection_input":
+            entry["input_type"] = "collection"
+            entry["collection_type"] = tool_inputs.get("collection_type", "list")
+        elif step_type == "parameter_input":
+            entry["input_type"] = "parameter"
+            entry["parameter_type"] = tool_inputs.get("parameter_type", "text")
+            if "default" in tool_inputs:
+                entry["default"] = tool_inputs["default"]
+        else:
+            entry["input_type"] = step_type
+
+        entry["optional"] = tool_inputs.get("optional", False)
+        inputs[inp_id] = entry
+
     return {
         "id": info.get("id", workflow_id),
         "name": info.get("name", ""),

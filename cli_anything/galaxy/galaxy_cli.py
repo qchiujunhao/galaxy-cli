@@ -12,6 +12,7 @@ import click
 from cli_anything.galaxy import __version__
 from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient, GalaxyBackendError
 from cli_anything.galaxy.core import (
+    collection as collection_mod,
     config as config_mod,
     history as history_mod,
     dataset as dataset_mod,
@@ -336,6 +337,117 @@ def dataset_delete(ctx, dataset_id, history_id, purge):
     _output(result, lambda d: click.echo(f"Deleted dataset: {d['id']}"))
 
 
+# ── Collection Commands ──────────────────────────────────────────────────
+
+@cli.group("collection")
+def collection_group():
+    """Manage dataset collections."""
+
+
+@collection_group.command("create")
+@click.argument("name")
+@click.option("--history-id", default=None, help="Target history ID")
+@click.option("--collection-type", "ctype", default="list",
+              type=click.Choice(["list", "list:paired"]),
+              help="Collection type (default: list)")
+@click.option("--element", "-e", "elements", multiple=True,
+              help="List element: DATASET_ID or name=DATASET_ID")
+@click.option("--pair", "-p", "pairs", multiple=True,
+              help="Paired element: pair_name:forward_id:reverse_id")
+@click.pass_context
+def collection_create(ctx, name, history_id, ctype, elements, pairs):
+    """Create a dataset collection from uploaded datasets.
+
+    \b
+    List collection:
+      galaxy-cli collection create "my list" -e DATASET_ID1 -e DATASET_ID2
+      galaxy-cli collection create "my list" -e sample1=ID1 -e sample2=ID2
+
+    \b
+    Paired collection:
+      galaxy-cli collection create "my pairs" --collection-type list:paired \\
+          -p "sample1:FORWARD_ID:REVERSE_ID" -p "sample2:FWD_ID:REV_ID"
+    """
+    client = _get_client(ctx)
+    hid = history_id or _require_history(ctx)
+
+    if ctype == "list:paired":
+        if not pairs:
+            raise click.UsageError(
+                "list:paired collections require --pair/-p arguments.\n"
+                "Format: -p 'pair_name:forward_id:reverse_id'"
+            )
+        element_ids = collection_mod.build_paired_elements(list(pairs))
+    else:
+        if not elements:
+            raise click.UsageError(
+                "list collections require --element/-e arguments.\n"
+                "Format: -e DATASET_ID  or  -e name=DATASET_ID"
+            )
+        element_ids = collection_mod.build_list_elements(list(elements))
+
+    result = collection_mod.create_collection(
+        client, hid, name, collection_type=ctype,
+        element_identifiers=element_ids,
+    )
+    _output(result, lambda d: click.echo(
+        f"Created collection: {d['name']} ({d['id']}) "
+        f"[{d['collection_type']}, {d['element_count']} elements]"
+    ))
+
+
+@collection_group.command("list")
+@click.option("--history-id", default=None, help="History ID (uses current if not set)")
+@click.option("--limit", default=50)
+@click.pass_context
+def collection_list(ctx, history_id, limit):
+    """List dataset collections in a history."""
+    client = _get_client(ctx)
+    hid = history_id or _require_history(ctx)
+    results = collection_mod.list_collections(client, hid, limit=limit)
+    def _human(data):
+        if not data:
+            click.echo("No collections found.")
+            return
+        for c in data:
+            click.echo(
+                f"  {c['id']}  {c['name']}  [{c['collection_type']}]  "
+                f"{c['element_count']} elements  ({c['state']})"
+            )
+    _output(results, _human)
+
+
+@collection_group.command("show")
+@click.argument("collection_id")
+@click.pass_context
+def collection_show(ctx, collection_id):
+    """Show collection details including element structure."""
+    client = _get_client(ctx)
+    result = collection_mod.show_collection(client, collection_id)
+    def _human(d):
+        click.echo(f"Collection: {d['name']} ({d['id']})")
+        click.echo(f"  Type: {d['collection_type']}")
+        click.echo(f"  Elements: {d['element_count']}")
+        click.echo(f"  State: {d['populated_state']}")
+        for elem in d.get("elements", []):
+            if elem["element_type"] == "hda":
+                click.echo(
+                    f"    [{elem['element_index']}] {elem['element_identifier']}: "
+                    f"{elem['name']} [{elem.get('extension', '?')}] ({elem.get('state', '?')})"
+                )
+            elif elem["element_type"] == "dataset_collection":
+                click.echo(
+                    f"    [{elem['element_index']}] {elem['element_identifier']} "
+                    f"({elem.get('collection_type', 'paired')})"
+                )
+                for sub in elem.get("elements", []):
+                    click.echo(
+                        f"      {sub['element_identifier']}: "
+                        f"{sub.get('name', '')} [{sub.get('extension', '?')}]"
+                    )
+    _output(result, _human)
+
+
 # ── Tool Commands ────────────────────────────────────────────────────────
 
 @cli.group("tool")
@@ -386,14 +498,65 @@ def tool_show(ctx, tool_id):
     """Show detailed tool information including inputs/outputs."""
     client = _get_client(ctx)
     result = tool_mod.show_tool(client, tool_id)
+    def _fmt_input(inp, indent=4):
+        """Format a single input parameter for human display."""
+        prefix = " " * indent
+        ptype = inp.get("type", "")
+        opt = " (optional)" if inp.get("optional") else ""
+        line = f"{prefix}{inp['name']} [{ptype}]{opt}: {inp.get('label', '')}"
+        click.echo(line)
+
+        if ptype == "data":
+            exts = inp.get("extensions", [])
+            if exts:
+                click.echo(f"{prefix}  accepts: {', '.join(exts)}")
+        elif ptype == "select":
+            opts = inp.get("options", [])
+            default = inp.get("default")
+            if opts:
+                choices = [f"{o['value']!r} ({o['label']})" for o in opts[:10]]
+                click.echo(f"{prefix}  choices: {', '.join(choices)}")
+                if len(opts) > 10:
+                    click.echo(f"{prefix}  ... and {len(opts) - 10} more")
+            if default:
+                click.echo(f"{prefix}  default: {default!r}")
+        elif ptype == "boolean":
+            click.echo(f"{prefix}  default: {inp.get('default', False)}")
+        elif ptype in ("integer", "float"):
+            parts = [f"default: {inp.get('default')}"]
+            if inp.get("min") is not None:
+                parts.append(f"min: {inp['min']}")
+            if inp.get("max") is not None:
+                parts.append(f"max: {inp['max']}")
+            click.echo(f"{prefix}  {', '.join(parts)}")
+        elif ptype == "text":
+            default = inp.get("default")
+            if default:
+                click.echo(f"{prefix}  default: {default!r}")
+        elif ptype == "conditional":
+            tp = inp.get("test_param", {})
+            if tp:
+                click.echo(f"{prefix}  switch on: {tp.get('name', '?')}")
+                _fmt_input(tp, indent + 4)
+            for case in inp.get("cases", []):
+                click.echo(f"{prefix}  when {tp.get('name', '?')}={case['value']!r}:")
+                for ci in case.get("inputs", []):
+                    _fmt_input(ci, indent + 6)
+        elif ptype == "repeat":
+            click.echo(f"{prefix}  (repeatable)")
+            for ri in inp.get("inputs", []):
+                _fmt_input(ri, indent + 4)
+        elif ptype == "section":
+            for si in inp.get("inputs", []):
+                _fmt_input(si, indent + 4)
+
     def _human(d):
         click.echo(f"Tool: {d['name']} ({d['id']}) v{d['version']}")
         click.echo(f"  {d['description']}")
         if d["inputs"]:
             click.echo("  Inputs:")
             for inp in d["inputs"]:
-                opt = " (optional)" if inp["optional"] else ""
-                click.echo(f"    {inp['name']} [{inp['type']}]{opt}: {inp['label']}")
+                _fmt_input(inp)
         if d["outputs"]:
             click.echo("  Outputs:")
             for out in d["outputs"]:
@@ -540,10 +703,31 @@ def workflow_show(ctx, workflow_id):
         click.echo(f"  Owner: {d['owner']}")
         click.echo(f"  Steps: {d['step_count']}")
         click.echo(f"  Version: {d['version']}")
+        if d.get("annotation"):
+            click.echo(f"  {d['annotation']}")
         if d["inputs"]:
             click.echo("  Inputs:")
             for k, v in d["inputs"].items():
-                click.echo(f"    [{k}] {v['label']}")
+                itype = v.get("input_type", "")
+                label = v.get("label", "")
+                line = f"    [{k}] {label}"
+                if itype == "collection":
+                    ctype = v.get("collection_type", "list")
+                    line += f"  (collection: {ctype})"
+                elif itype == "parameter":
+                    ptype = v.get("parameter_type", "text")
+                    line += f"  (parameter: {ptype})"
+                    default = v.get("default")
+                    if default is not None:
+                        line += f", default={default!r}"
+                elif itype == "dataset":
+                    line += "  (dataset)"
+                if v.get("optional"):
+                    line += " [optional]"
+                click.echo(line)
+                ann = v.get("annotation", "")
+                if ann:
+                    click.echo(f"      {ann}")
         if d["steps"]:
             click.echo("  Steps:")
             for sid, step in d["steps"].items():
@@ -824,6 +1008,7 @@ def repl(ctx):
         "config":     "Manage server connection (set-url, set-key, show, test)",
         "history":    "Manage histories (list, create, show, delete, use, export)",
         "dataset":    "Manage datasets (list, upload, show, download, peek, delete)",
+        "collection": "Manage dataset collections (create, list, show)",
         "tool":       "Manage/run tools (list, search, show, run)",
         "job":        "Manage jobs (list, show, cancel, wait)",
         "workflow":   "Manage workflows (list, show, import, export, run, delete)",
