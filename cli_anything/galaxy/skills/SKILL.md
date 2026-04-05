@@ -71,7 +71,7 @@ Use `--json` flag for machine-readable JSON output (recommended for agents).
 | `tool list [-q QUERY]` | List/search tools |
 | `tool search QUERY` | Search tools by name |
 | `tool show TOOL_ID` | Show tool inputs/outputs |
-| `tool run TOOL_ID [--history-id ID] -i key=value [--wait]` | Run a tool |
+| `tool run TOOL_ID [--history-id ID] -i key=value [--wait --timeout SECS --poll-interval SECS]` | Run a tool |
 
 ### job — Job Monitoring
 | Command | Description |
@@ -79,7 +79,7 @@ Use `--json` flag for machine-readable JSON output (recommended for agents).
 | `job list [--state STATE] [--tool-id ID]` | List jobs |
 | `job show JOB_ID [--full]` | Show job details |
 | `job cancel JOB_ID` | Cancel a job |
-| `job wait JOB_ID [--timeout SECS]` | Wait for job completion |
+| `job wait JOB_ID [--timeout SECS] [--poll-interval SECS]` | Wait for job completion |
 
 ### workflow — Analysis Pipelines
 | Command | Description |
@@ -88,7 +88,7 @@ Use `--json` flag for machine-readable JSON output (recommended for agents).
 | `workflow show WF_ID` | Show workflow steps |
 | `workflow import FILE` | Import workflow from JSON |
 | `workflow export WF_ID [-o FILE]` | Export workflow |
-| `workflow run WF_ID -i step=dataset_id [--wait]` | Run workflow |
+| `workflow run WF_ID -i step=dataset_id [--wait --timeout SECS --poll-interval SECS]` | Run workflow |
 | `workflow delete WF_ID` | Delete workflow |
 
 ### invocation — Workflow Runs
@@ -97,7 +97,7 @@ Use `--json` flag for machine-readable JSON output (recommended for agents).
 | `invocation list [--workflow-id ID]` | List invocations |
 | `invocation show INV_ID` | Show invocation steps |
 | `invocation cancel INV_ID` | Cancel invocation |
-| `invocation wait INV_ID [--timeout SECS]` | Wait for completion |
+| `invocation wait INV_ID [--timeout SECS] [--poll-interval SECS]` | Wait for completion |
 
 ### library — Shared Data
 | Command | Description |
@@ -156,10 +156,11 @@ galaxy-cli --json dataset download DATASET_ID ./output.tabular
 ## Agent Guidance
 
 - Always use `--json` for programmatic output
+- In `--json` mode, progress lines are sent to `stderr` so `stdout` remains valid JSON
 - Set `GALAXY_URL` and `GALAXY_API_KEY` env vars before starting
 - Use `history use ID` to set a default history, avoiding `--history-id` on every command
-- Use `tool run --wait` to block until the job completes
-- Use `job wait` or `invocation wait` for polling with timeout
+- Use `tool run --wait --timeout ... --poll-interval ...` to block until the job completes with explicit polling control
+- Use `job wait` or `invocation wait` for polling with timeout and interval control
 - Job states: `new`, `queued`, `running`, `ok`, `error`, `deleted`, `paused`
 - Invocation states: `new`, `ready`, `scheduled`, `cancelled`, `failed`
-- Error responses include `err_msg` field in JSON output
+- JSON error output is structured with `error`, `category`, `message`, and optional `suggestion`

@@ -762,7 +762,11 @@ class TestSession:
 
 class TestGalaxyBackend:
     def test_client_no_url(self):
-        from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient, GalaxyBackendError
+        from cli_anything.galaxy.utils.galaxy_backend import (
+            EXIT_AUTH_ERROR,
+            GalaxyClient,
+            GalaxyBackendError,
+        )
 
         with patch.dict(os.environ, {}, clear=True):
             # Remove env vars and ensure no config file
@@ -770,19 +774,49 @@ class TestGalaxyBackend:
             with patch.dict(os.environ, env, clear=True):
                 from cli_anything.galaxy.utils import galaxy_backend as gb
                 with patch.object(gb, "DEFAULT_CONFIG_FILE", Path("/nonexistent/config.json")):
-                    with pytest.raises(GalaxyBackendError, match="URL not configured"):
+                    with pytest.raises(GalaxyBackendError, match="URL not configured") as exc:
                         GalaxyClient()
+        assert exc.value.category == "auth"
+        assert exc.value.exit_code == EXIT_AUTH_ERROR
+        assert "GALAXY_URL" in exc.value.suggestion
 
     def test_client_no_key(self):
-        from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient, GalaxyBackendError
+        from cli_anything.galaxy.utils.galaxy_backend import (
+            EXIT_AUTH_ERROR,
+            GalaxyClient,
+            GalaxyBackendError,
+        )
 
         env = {k: v for k, v in os.environ.items() if k not in ("GALAXY_URL", "GALAXY_API_KEY")}
         env["GALAXY_URL"] = "https://galaxy.example.org"
         with patch.dict(os.environ, env, clear=True):
             from cli_anything.galaxy.utils import galaxy_backend as gb
             with patch.object(gb, "DEFAULT_CONFIG_FILE", Path("/nonexistent/config.json")):
-                with pytest.raises(GalaxyBackendError, match="API key not configured"):
+                with pytest.raises(GalaxyBackendError, match="API key not configured") as exc:
                     GalaxyClient()
+        assert exc.value.category == "auth"
+        assert exc.value.exit_code == EXIT_AUTH_ERROR
+        assert "GALAXY_API_KEY" in exc.value.suggestion
+
+    def test_backend_error_to_dict_includes_suggestion(self):
+        from cli_anything.galaxy.utils.galaxy_backend import (
+            EXIT_TIMEOUT,
+            GalaxyBackendError,
+        )
+
+        err = GalaxyBackendError(
+            "Request timed out",
+            category="timeout",
+            exit_code=EXIT_TIMEOUT,
+            suggestion="Increase timeout",
+        )
+
+        assert err.to_dict() == {
+            "error": True,
+            "category": "timeout",
+            "message": "Request timed out",
+            "suggestion": "Increase timeout",
+        }
 
     def test_client_from_env(self):
         from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient
@@ -807,7 +841,11 @@ class TestGalaxyBackend:
             assert client._api_url("/tools") == "https://galaxy.example.org/api/tools"
 
     def test_upload_file_closes_handle_on_request_error(self, tmp_path):
-        from cli_anything.galaxy.utils.galaxy_backend import GalaxyBackendError, GalaxyClient
+        from cli_anything.galaxy.utils.galaxy_backend import (
+            EXIT_TIMEOUT,
+            GalaxyBackendError,
+            GalaxyClient,
+        )
 
         upload_file = tmp_path / "reads.fastq"
         upload_file.write_text("@r1\nACGT\n+\n!!!!\n")
@@ -819,7 +857,10 @@ class TestGalaxyBackend:
             raise requests.Timeout("slow upload")
 
         with patch("cli_anything.galaxy.utils.galaxy_backend.requests.post", side_effect=fake_post):
-            with pytest.raises(GalaxyBackendError, match="timed out"):
+            with pytest.raises(GalaxyBackendError, match="timed out") as exc:
                 client.upload_file(str(upload_file), "h1")
 
         assert observed["closed_during_request"] is False
+        assert exc.value.category == "timeout"
+        assert exc.value.exit_code == EXIT_TIMEOUT
+        assert "Increase timeout" in exc.value.suggestion
