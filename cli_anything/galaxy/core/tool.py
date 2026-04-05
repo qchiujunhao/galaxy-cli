@@ -1,5 +1,10 @@
 """Tool management — list, search, show, run Galaxy tools."""
 
+import re
+
+
+_GALAXY_ID_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+
 
 def _searchable_text(tool):
     return " ".join(
@@ -122,6 +127,31 @@ def show_tool(client, tool_id):
     }
 
 
+def _collect_input_types(inputs):
+    """Map input names to their Galaxy input types."""
+    input_types = {}
+    for inp in inputs or []:
+        name = inp.get("name")
+        input_type = inp.get("type")
+        if name and input_type:
+            input_types[name] = input_type
+    return input_types
+
+
+def _normalize_tool_input(name, value, input_types):
+    """Convert CLI key=value strings to Galaxy tool input payloads."""
+    input_type = input_types.get(name, "")
+    if isinstance(value, str):
+        if ":" in value:
+            src, dataset_id = value.split(":", 1)
+            if src in {"hda", "hdca", "ldda"} and dataset_id:
+                return {"src": src, "id": dataset_id}
+        if input_type in {"data", "data_collection"} and _GALAXY_ID_RE.match(value):
+            src = "hdca" if input_type == "data_collection" else "hda"
+            return {"src": src, "id": value}
+    return value
+
+
 def run_tool(client, tool_id, history_id, inputs=None):
     """Run a tool with given inputs in a history.
 
@@ -131,10 +161,17 @@ def run_tool(client, tool_id, history_id, inputs=None):
         history_id: Target history for outputs.
         inputs: Dict of tool parameter name -> value.
     """
+    tool_info = show_tool(client, tool_id)
+    input_types = _collect_input_types(tool_info.get("inputs", []))
+    normalized_inputs = {
+        key: _normalize_tool_input(key, value, input_types)
+        for key, value in (inputs or {}).items()
+    }
+
     payload = {
         "tool_id": tool_id,
         "history_id": history_id,
-        "inputs": inputs or {},
+        "inputs": normalized_inputs,
     }
     result = client.post("tools", json_data=payload)
     jobs = result.get("jobs", [])

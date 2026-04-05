@@ -373,6 +373,15 @@ class TestTool:
         from cli_anything.galaxy.core.tool import run_tool
 
         client = self._mock_client()
+        client.get.return_value = {
+            "id": "fastqc",
+            "name": "FastQC",
+            "version": "0.73",
+            "description": "Read quality reports",
+            "inputs": [{"name": "input_file", "label": "Raw data", "type": "data",
+                        "value": None, "optional": False, "help": "FASTQ file"}],
+            "outputs": [{"name": "html_file", "format": "html", "label": "Report"}],
+        }
         client.post.return_value = {
             "jobs": [{"id": "j1", "state": "new", "tool_id": "fastqc"}],
             "outputs": [{"id": "d2", "name": "FastQC Report", "extension": "html"}],
@@ -381,6 +390,82 @@ class TestTool:
         assert len(result["jobs"]) == 1
         assert result["jobs"][0]["id"] == "j1"
         assert len(result["outputs"]) == 1
+
+    def test_run_tool_wraps_dataset_input(self):
+        from cli_anything.galaxy.core.tool import run_tool
+
+        client = self._mock_client()
+        dataset_id = "f9cad7b01a4721358dba0ff950c535fa"
+        client.get.return_value = {
+            "id": "fastqc",
+            "name": "FastQC",
+            "version": "0.73",
+            "description": "Read quality reports",
+            "inputs": [{"name": "input_file", "label": "Raw data", "type": "data",
+                        "value": None, "optional": False, "help": "FASTQ file"}],
+            "outputs": [],
+        }
+        client.post.return_value = {"jobs": [], "outputs": []}
+
+        run_tool(client, "fastqc", "h1", inputs={"input_file": dataset_id})
+
+        _, kwargs = client.post.call_args
+        assert kwargs["json_data"]["inputs"]["input_file"] == {"src": "hda", "id": dataset_id}
+
+    def test_run_tool_supports_explicit_dataset_src_prefix(self):
+        from cli_anything.galaxy.core.tool import run_tool
+
+        client = self._mock_client()
+        dataset_id = "f9cad7b01a4721358dba0ff950c535fa"
+        client.get.return_value = {
+            "id": "collection_tool",
+            "name": "Collection Tool",
+            "version": "1.0",
+            "description": "",
+            "inputs": [{"name": "reads", "label": "Reads", "type": "data_collection",
+                        "value": None, "optional": False, "help": ""}],
+            "outputs": [],
+        }
+        client.post.return_value = {"jobs": [], "outputs": []}
+
+        run_tool(client, "collection_tool", "h1", inputs={"reads": f"hdca:{dataset_id}"})
+
+        _, kwargs = client.post.call_args
+        assert kwargs["json_data"]["inputs"]["reads"] == {"src": "hdca", "id": dataset_id}
+
+    def test_run_tool_keeps_plain_scalar_inputs(self):
+        from cli_anything.galaxy.core.tool import run_tool
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "cutadapt",
+            "name": "Cutadapt",
+            "version": "5.2",
+            "description": "",
+            "inputs": [
+                {"name": "input_1", "label": "Reads", "type": "data", "value": None, "optional": False, "help": ""},
+                {"name": "adapter", "label": "Adapter", "type": "text", "value": "", "optional": False, "help": ""},
+            ],
+            "outputs": [],
+        }
+        client.post.return_value = {"jobs": [], "outputs": []}
+
+        run_tool(
+            client,
+            "cutadapt",
+            "h1",
+            inputs={
+                "input_1": "f9cad7b01a4721358dba0ff950c535fa",
+                "adapter": "AGATCGGAAGAGC",
+            },
+        )
+
+        _, kwargs = client.post.call_args
+        assert kwargs["json_data"]["inputs"]["input_1"] == {
+            "src": "hda",
+            "id": "f9cad7b01a4721358dba0ff950c535fa",
+        }
+        assert kwargs["json_data"]["inputs"]["adapter"] == "AGATCGGAAGAGC"
 
 
 # ── Job Tests ────────────────────────────────────────────────────────────
