@@ -44,10 +44,31 @@ class TestConfig:
 
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"url": "https://g.org", "api_key": "abcdef123456789"}))
-        with patch.object(gb, "DEFAULT_CONFIG_FILE", cfg_file):
+        env = {k: v for k, v in os.environ.items() if k not in ("GALAXY_URL", "GALAXY_API_KEY")}
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(gb, "DEFAULT_CONFIG_FILE", cfg_file):
             result = show_config()
             assert result["url"] == "https://g.org"
+            assert result["url_source"] == "config"
             assert result["api_key"] == "***...6789"
+            assert result["api_key_source"] == "config"
+
+    def test_show_config_prefers_environment(self, tmp_path):
+        from cli_anything.galaxy.core.config import show_config
+        from cli_anything.galaxy.utils import galaxy_backend as gb
+
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"url": "https://config.g.org", "api_key": "abcdef123456789"}))
+        env = dict(os.environ)
+        env["GALAXY_URL"] = "https://env.g.org"
+        env["GALAXY_API_KEY"] = "envkey123456"
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(gb, "DEFAULT_CONFIG_FILE", cfg_file):
+            result = show_config()
+            assert result["url"] == "https://env.g.org"
+            assert result["url_source"] == "env"
+            assert result["api_key"] == "***...3456"
+            assert result["api_key_source"] == "env"
 
     def test_save_config_restricts_permissions(self, tmp_path):
         from cli_anything.galaxy.core.config import set_key
@@ -66,10 +87,14 @@ class TestConfig:
         from cli_anything.galaxy.utils import galaxy_backend as gb
 
         cfg_file = tmp_path / "nonexistent.json"
-        with patch.object(gb, "DEFAULT_CONFIG_FILE", cfg_file):
+        env = {k: v for k, v in os.environ.items() if k not in ("GALAXY_URL", "GALAXY_API_KEY")}
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(gb, "DEFAULT_CONFIG_FILE", cfg_file):
             result = show_config()
             assert result["url"] == "(not set)"
+            assert result["url_source"] == "unset"
             assert result["api_key"] == "(not set)"
+            assert result["api_key_source"] == "unset"
 
     def test_test_connection(self):
         from cli_anything.galaxy.core.config import test_connection
@@ -220,6 +245,29 @@ class TestDataset:
         assert result["extension"] == "txt"
         assert result["file_size"] == 1024
 
+    def test_show_dataset_requires_non_empty_id(self):
+        from cli_anything.galaxy.core.dataset import show_dataset
+        from cli_anything.galaxy.utils.galaxy_backend import GalaxyBackendError
+
+        client = self._mock_client()
+        with pytest.raises(GalaxyBackendError) as exc:
+            show_dataset(client, "")
+
+        assert exc.value.category == "invalid_request"
+        assert "Dataset ID is required" in str(exc.value)
+
+    def test_show_dataset_rejects_non_dict_response(self):
+        from cli_anything.galaxy.core.dataset import show_dataset
+        from cli_anything.galaxy.utils.galaxy_backend import GalaxyBackendError
+
+        client = self._mock_client()
+        client.get.return_value = []
+        with pytest.raises(GalaxyBackendError) as exc:
+            show_dataset(client, "d1")
+
+        assert exc.value.category == "api_error"
+        assert "Unexpected response" in str(exc.value)
+
     def test_show_dataset_with_history(self):
         from cli_anything.galaxy.core.dataset import show_dataset
 
@@ -246,6 +294,25 @@ class TestDataset:
         result = peek_dataset(client, "d1", lines=3)
         assert len(result["lines"]) == 3
         assert result["lines"][0] == "line1"
+
+    def test_peek_dataset_supports_data_list_payload(self):
+        from cli_anything.galaxy.core.dataset import peek_dataset
+
+        client = self._mock_client()
+        client.get.return_value = {"data": ["line1\n", "line2\n", "line3\n", "line4\n"]}
+        result = peek_dataset(client, "d1", lines=3)
+        assert result["lines"] == ["line1", "line2", "line3"]
+
+    def test_peek_dataset_supports_ck_data_fallback(self):
+        from cli_anything.galaxy.core.dataset import peek_dataset
+
+        client = self._mock_client()
+        client.get.side_effect = [
+            {"dataset_type": "tabular"},
+            {"ck_data": "line1\nline2\nline3\nline4\n"},
+        ]
+        result = peek_dataset(client, "d1", lines=3)
+        assert result["lines"] == ["line1", "line2", "line3"]
 
     def test_delete_dataset(self):
         from cli_anything.galaxy.core.dataset import delete_dataset
@@ -607,6 +674,25 @@ class TestWorkflow:
         assert result["status"] == "invoked"
         assert result["id"] == "inv1"
 
+    def test_run_workflow_supports_collection_refs(self):
+        from cli_anything.galaxy.core.workflow import run_workflow
+
+        client = self._mock_client()
+        client.post.return_value = {"id": "inv1", "state": "new", "history_id": "h1"}
+
+        run_workflow(
+            client,
+            "w1",
+            history_id="h1",
+            inputs={"0": "hdca:f9cad7b01a4721358dba0ff950c535fa"},
+        )
+
+        _, kwargs = client.post.call_args
+        assert kwargs["json_data"]["ds_map"]["0"] == {
+            "src": "hdca",
+            "id": "f9cad7b01a4721358dba0ff950c535fa",
+        }
+
     def test_delete_workflow(self):
         from cli_anything.galaxy.core.workflow import delete_workflow
 
@@ -655,6 +741,80 @@ class TestInvocation:
         client.delete.return_value = {}
         result = cancel_invocation(client, "inv1")
         assert result["status"] == "cancelled"
+
+    def test_wait_for_invocation_returns_on_failed_step(self):
+        from cli_anything.galaxy.core.invocation import wait_for_invocation
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "inv1",
+            "state": "new",
+            "steps": [
+                {"id": "s1", "order_index": 0, "state": "ok", "job_id": "j1"},
+                {"id": "s2", "order_index": 1, "state": "failed", "job_id": "j2"},
+            ],
+        }
+
+        result = wait_for_invocation(client, "inv1", poll_interval=0)
+        assert result["state"] == "failed"
+        assert result["invocation_state"] == "new"
+        assert len(result["failed_steps"]) == 1
+        assert result["failed_steps"][0]["job_id"] == "j2"
+
+    def test_wait_for_invocation_waits_through_scheduled_until_jobs_finish(self):
+        from cli_anything.galaxy.core.invocation import wait_for_invocation
+
+        client = self._mock_client()
+        client.get.side_effect = [
+            {
+                "id": "inv1",
+                "state": "scheduled",
+                "steps": [{"id": "s1", "order_index": 0, "state": "scheduled", "job_id": "j1"}],
+            },
+            {"id": "j1", "state": "running", "exit_code": None},
+            {
+                "id": "inv1",
+                "state": "scheduled",
+                "steps": [{"id": "s1", "order_index": 0, "state": "scheduled", "job_id": "j1"}],
+            },
+            {"id": "j1", "state": "ok", "exit_code": 0},
+        ]
+
+        with patch("cli_anything.galaxy.core.invocation.time.sleep"):
+            result = wait_for_invocation(client, "inv1", max_wait=2, poll_interval=1)
+
+        assert result["state"] == "ok"
+        assert result["invocation_state"] == "scheduled"
+        assert result["waited_seconds"] == 1
+        assert result["jobs"][0]["id"] == "j1"
+
+    def test_wait_for_invocation_returns_on_failed_job(self):
+        from cli_anything.galaxy.core.invocation import wait_for_invocation
+
+        client = self._mock_client()
+        client.get.side_effect = [
+            {
+                "id": "inv1",
+                "state": "scheduled",
+                "steps": [{"id": "s1", "order_index": 0, "state": "scheduled", "job_id": "j1"}],
+            },
+            {"id": "j1", "state": "error", "exit_code": 1},
+        ]
+
+        result = wait_for_invocation(client, "inv1", max_wait=1, poll_interval=1)
+
+        assert result["state"] == "failed"
+        assert result["invocation_state"] == "scheduled"
+        assert result["failed_jobs"][0]["id"] == "j1"
+
+    def test_wait_for_invocation_timeout(self):
+        from cli_anything.galaxy.core.invocation import wait_for_invocation
+
+        client = self._mock_client()
+        client.get.return_value = {"id": "inv1", "state": "new", "steps": []}
+
+        result = wait_for_invocation(client, "inv1", max_wait=0, poll_interval=1)
+        assert result["state"] == "timeout"
 
 
 # ── Library Tests ────────────────────────────────────────────────────────

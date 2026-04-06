@@ -1,5 +1,7 @@
 """Configuration management for Galaxy CLI."""
 
+import os
+
 from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient
 
 
@@ -16,10 +18,16 @@ def set_key(api_key):
 
 
 def show_config():
-    """Show current configuration."""
+    """Show effective configuration, including environment overrides."""
     cfg = GalaxyClient.load_config()
-    result = {"url": cfg.get("url", "(not set)"), "api_key": "(not set)"}
-    key = cfg.get("api_key")
+    url = os.environ.get("GALAXY_URL") or cfg.get("url")
+    key = os.environ.get("GALAXY_API_KEY") or cfg.get("api_key")
+    result = {
+        "url": url or "(not set)",
+        "url_source": "env" if os.environ.get("GALAXY_URL") else ("config" if cfg.get("url") else "unset"),
+        "api_key": "(not set)",
+        "api_key_source": "env" if os.environ.get("GALAXY_API_KEY") else ("config" if cfg.get("api_key") else "unset"),
+    }
     if key:
         result["api_key"] = f"***...{key[-4:]}" if len(key) >= 4 else "***"
     return result

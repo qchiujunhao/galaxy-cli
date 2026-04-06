@@ -3,6 +3,12 @@
 import time
 
 
+_INVOCATION_FAILURE_STATES = {"cancelled", "failed", "error"}
+_FAILED_STEP_STATES = {"failed", "error", "cancelled"}
+_JOB_FAILURE_STATES = {"error", "deleted", "paused"}
+_JOB_TERMINAL_STATES = {"ok"} | _JOB_FAILURE_STATES
+
+
 def list_invocations(client, workflow_id=None, history_id=None, limit=50):
     """List workflow invocations."""
     params = {"limit": limit}
@@ -58,18 +64,66 @@ def cancel_invocation(client, invocation_id):
 
 def wait_for_invocation(client, invocation_id, max_wait=1800, poll_interval=10):
     """Wait for a workflow invocation to complete."""
-    terminal_states = {"scheduled", "cancelled", "failed", "error"}
     elapsed = 0
     while elapsed < max_wait:
         info = client.get(f"invocations/{invocation_id}")
         state = info.get("state", "unknown")
-        # "scheduled" means all steps are scheduled (essentially done from invocation perspective)
-        if state in terminal_states:
+        steps = info.get("steps", [])
+        failed_steps = [
+            {
+                "id": step.get("id", ""),
+                "order_index": step.get("order_index", 0),
+                "state": step.get("state", ""),
+                "job_id": step.get("job_id"),
+            }
+            for step in steps
+            if step.get("state", "") in _FAILED_STEP_STATES
+        ]
+        if failed_steps:
+            return {
+                "id": invocation_id,
+                "state": "failed",
+                "invocation_state": state,
+                "waited_seconds": elapsed,
+                "failed_steps": failed_steps,
+            }
+
+        if state in _INVOCATION_FAILURE_STATES:
             return {
                 "id": invocation_id,
                 "state": state,
                 "waited_seconds": elapsed,
             }
+
+        job_ids = [step.get("job_id") for step in steps if step.get("job_id")]
+        if job_ids:
+            jobs = []
+            for job_id in job_ids:
+                job = client.get(f"jobs/{job_id}")
+                jobs.append({
+                    "id": job_id,
+                    "state": job.get("state", "unknown"),
+                    "exit_code": job.get("exit_code"),
+                })
+
+            failed_jobs = [job for job in jobs if job["state"] in _JOB_FAILURE_STATES]
+            if failed_jobs:
+                return {
+                    "id": invocation_id,
+                    "state": "failed",
+                    "invocation_state": state,
+                    "waited_seconds": elapsed,
+                    "failed_jobs": failed_jobs,
+                }
+
+            if all(job["state"] in _JOB_TERMINAL_STATES for job in jobs):
+                return {
+                    "id": invocation_id,
+                    "state": "ok",
+                    "invocation_state": state,
+                    "waited_seconds": elapsed,
+                    "jobs": jobs,
+                }
         time.sleep(poll_interval)
         elapsed += poll_interval
     return {

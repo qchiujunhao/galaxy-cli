@@ -1,9 +1,11 @@
 """CLI behavior tests."""
 
 import json
+import sys
 from unittest.mock import patch
 
 from click.testing import CliRunner
+import pytest
 
 
 class TestCli:
@@ -32,7 +34,7 @@ class TestCli:
     def test_tool_run_wait_keeps_stdout_json_clean(self):
         from cli_anything.galaxy.galaxy_cli import cli
 
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         run_result = {
             "tool_id": "fastp",
             "jobs": [{"id": "job-1"}],
@@ -59,7 +61,7 @@ class TestCli:
     def test_invocation_wait_keeps_stdout_json_clean(self):
         from cli_anything.galaxy.galaxy_cli import cli
 
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         wait_result = {"id": "inv-1", "state": "scheduled", "waited_seconds": 12}
 
         with patch("cli_anything.galaxy.galaxy_cli._get_client", return_value=object()), \
@@ -74,3 +76,35 @@ class TestCli:
         assert data["id"] == "inv-1"
         assert data["state"] == "scheduled"
         assert result.stderr == "Waiting for invocation inv-1...\n"
+
+    def test_main_returns_structured_json_for_collection_usage_errors(self):
+        from cli_anything.galaxy.galaxy_cli import EXIT_USER_ERROR, main
+
+        runner = CliRunner()
+        with runner.isolated_filesystem(), \
+             patch.object(
+                 sys,
+                 "argv",
+                 [
+                     "galaxy-cli",
+                     "--json",
+                     "collection",
+                     "create",
+                     "pairs",
+                     "--collection-type",
+                     "list:paired",
+                     "-p",
+                     "bad",
+                 ],
+             ), \
+             patch("click.echo") as mock_echo, \
+             patch("cli_anything.galaxy.galaxy_cli._get_client", return_value=object()), \
+             patch("cli_anything.galaxy.galaxy_cli._require_history", return_value="hist-1"):
+            with pytest.raises(SystemExit) as exc:
+                main()
+
+        assert exc.value.code == EXIT_USER_ERROR
+        payload = json.loads(mock_echo.call_args.args[0])
+        assert payload["error"] is True
+        assert payload["category"] == "usage_error"
+        assert "Invalid pair format" in payload["message"]

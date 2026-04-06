@@ -1,7 +1,11 @@
 """Workflow management — import, export, list, show, run, delete workflows."""
 
 import json
+import re
 from pathlib import Path
+
+
+_GALAXY_ID_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 
 
 def list_workflows(client, published=False):
@@ -133,10 +137,22 @@ def run_workflow(client, workflow_id, history_id=None, inputs=None, params=None,
         payload["history_id"] = history_id
 
     if inputs:
-        # Convert simple {step_index: dataset_id} to Galaxy API format
+        # Convert simple {step_index: dataset_id} to Galaxy API format.
+        # Explicit source prefixes allow dataset collections and library datasets.
         ds_map = {}
-        for step_key, dataset_id in inputs.items():
-            ds_map[str(step_key)] = {"src": "hda", "id": dataset_id}
+        for step_key, dataset_ref in inputs.items():
+            if isinstance(dataset_ref, dict):
+                ds_map[str(step_key)] = dataset_ref
+            elif isinstance(dataset_ref, str) and ":" in dataset_ref:
+                src, dataset_id = dataset_ref.split(":", 1)
+                if src in {"hda", "hdca", "ldda"} and dataset_id:
+                    ds_map[str(step_key)] = {"src": src, "id": dataset_id}
+                else:
+                    ds_map[str(step_key)] = {"src": "hda", "id": dataset_ref}
+            elif isinstance(dataset_ref, str) and _GALAXY_ID_RE.match(dataset_ref):
+                ds_map[str(step_key)] = {"src": "hda", "id": dataset_ref}
+            else:
+                ds_map[str(step_key)] = {"src": "hda", "id": dataset_ref}
         payload["ds_map"] = ds_map
 
     if params:

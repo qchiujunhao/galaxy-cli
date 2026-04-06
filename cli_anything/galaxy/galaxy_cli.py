@@ -8,6 +8,7 @@ import sys
 import shlex
 
 import click
+from click.exceptions import Exit
 
 from cli_anything.galaxy import __version__
 from cli_anything.galaxy.utils.galaxy_backend import (
@@ -381,20 +382,23 @@ def collection_create(ctx, name, history_id, ctype, elements, pairs):
     client = _get_client(ctx)
     hid = history_id or _require_history(ctx)
 
-    if ctype == "list:paired":
-        if not pairs:
-            raise click.UsageError(
-                "list:paired collections require --pair/-p arguments.\n"
-                "Format: -p 'pair_name:forward_id:reverse_id'"
-            )
-        element_ids = collection_mod.build_paired_elements(list(pairs))
-    else:
-        if not elements:
-            raise click.UsageError(
-                "list collections require --element/-e arguments.\n"
-                "Format: -e DATASET_ID  or  -e name=DATASET_ID"
-            )
-        element_ids = collection_mod.build_list_elements(list(elements))
+    try:
+        if ctype == "list:paired":
+            if not pairs:
+                raise click.UsageError(
+                    "list:paired collections require --pair/-p arguments.\n"
+                    "Format: -p 'pair_name:forward_id:reverse_id'"
+                )
+            element_ids = collection_mod.build_paired_elements(list(pairs))
+        else:
+            if not elements:
+                raise click.UsageError(
+                    "list collections require --element/-e arguments.\n"
+                    "Format: -e DATASET_ID  or  -e name=DATASET_ID"
+                )
+            element_ids = collection_mod.build_list_elements(list(elements))
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
 
     result = collection_mod.create_collection(
         client, hid, name, collection_type=ctype,
@@ -1088,7 +1092,9 @@ def main():
     """Main entry point."""
     root_obj = {"json_mode": "--json" in sys.argv[1:] and "--no-json" not in sys.argv[1:]}
     try:
-        cli(obj=root_obj)
+        cli.main(args=sys.argv[1:], prog_name="galaxy-cli", obj=root_obj, standalone_mode=False)
+    except Exit as exc:
+        sys.exit(exc.exit_code)
     except click.UsageError as exc:
         if root_obj["json_mode"]:
             click.echo(json.dumps({
@@ -1099,6 +1105,16 @@ def main():
         else:
             click.echo(f"Error: {exc}", err=True)
         sys.exit(EXIT_USER_ERROR)
+    except click.ClickException as exc:
+        if root_obj["json_mode"]:
+            click.echo(json.dumps({
+                "error": True,
+                "category": "click_error",
+                "message": exc.format_message(),
+            }))
+        else:
+            exc.show()
+        sys.exit(getattr(exc, "exit_code", EXIT_USER_ERROR))
     except GalaxyBackendError as exc:
         if root_obj["json_mode"]:
             click.echo(json.dumps(exc.to_dict()))

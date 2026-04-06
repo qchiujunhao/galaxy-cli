@@ -2,6 +2,11 @@
 
 from pathlib import Path
 
+from cli_anything.galaxy.utils.galaxy_backend import (
+    EXIT_USER_ERROR,
+    GalaxyBackendError,
+)
+
 
 def upload_dataset(client, history_id, file_path, file_type="auto", dbkey="?"):
     """Upload a local file to a Galaxy history."""
@@ -21,10 +26,23 @@ def upload_dataset(client, history_id, file_path, file_type="auto", dbkey="?"):
 
 def show_dataset(client, dataset_id, history_id=None):
     """Show details of a dataset."""
+    if not dataset_id:
+        raise GalaxyBackendError(
+            "Dataset ID is required.",
+            category="invalid_request",
+            exit_code=EXIT_USER_ERROR,
+            suggestion="Set DATASET_ID first or pass a non-empty dataset ID.",
+        )
     if history_id:
         info = client.get(f"histories/{history_id}/contents/{dataset_id}")
     else:
         info = client.get(f"datasets/{dataset_id}")
+    if not isinstance(info, dict):
+        raise GalaxyBackendError(
+            f"Unexpected response while looking up dataset '{dataset_id}'.",
+            category="api_error",
+            suggestion="Verify the dataset ID is correct and non-empty.",
+        )
     return {
         "id": info.get("id", ""),
         "name": info.get("name", ""),
@@ -53,16 +71,29 @@ def download_dataset(client, dataset_id, output_path):
 def peek_dataset(client, dataset_id, lines=10):
     """Get a preview of dataset contents."""
     info = client.get(f"datasets/{dataset_id}", params={"data_type": "raw_data", "provider": "base"})
-    # The peek is typically included in the dataset info
+    # Some Galaxy deployments expose preview text under `peek`.
     if "peek" in info:
         raw_peek = info["peek"]
         peek_lines = raw_peek.strip().split("\n")[:lines]
         return {"id": dataset_id, "lines": peek_lines, "total_shown": len(peek_lines)}
-    # Fallback: try getting raw content directly
+
+    # usegalaxy.org commonly returns preview rows under `data`.
+    raw_data = info.get("data")
+    if isinstance(raw_data, list):
+        peek_lines = [str(line).rstrip("\n") for line in raw_data[:lines]]
+        return {"id": dataset_id, "lines": peek_lines, "total_shown": len(peek_lines)}
+    if isinstance(raw_data, str) and raw_data.strip():
+        peek_lines = raw_data.strip().split("\n")[:lines]
+        return {"id": dataset_id, "lines": peek_lines, "total_shown": len(peek_lines)}
+
+    # Fallback: try getting raw content directly.
     try:
         preview = client.get(f"datasets/{dataset_id}/display", params={"offset": 0, "limit": lines})
-        if isinstance(preview, dict) and "raw" in preview:
+        if isinstance(preview, dict) and "raw" in preview and preview["raw"]:
             peek_lines = preview["raw"].strip().split("\n")[:lines]
+            return {"id": dataset_id, "lines": peek_lines, "total_shown": len(peek_lines)}
+        if isinstance(preview, dict) and "ck_data" in preview and preview["ck_data"]:
+            peek_lines = str(preview["ck_data"]).strip().split("\n")[:lines]
             return {"id": dataset_id, "lines": peek_lines, "total_shown": len(peek_lines)}
     except Exception:
         pass
