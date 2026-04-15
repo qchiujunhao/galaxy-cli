@@ -33,9 +33,9 @@ def _resolve_cli(name):
     if force:
         raise RuntimeError(f"{name} not found in PATH. Install with: pip install -e .")
     module_map = {
-        "galaxy-cli": "cli_anything.galaxy.galaxy_cli",
-        "cli-galaxy": "cli_anything.galaxy.galaxy_cli",
-        "cli-anything-galaxy": "cli_anything.galaxy.galaxy_cli",
+        "galaxy-cli": "galaxy_cli.cli",
+        "cli-galaxy": "galaxy_cli.cli",
+        "cli-anything-galaxy": "galaxy_cli.cli",
     }
     module = module_map.get(name)
     if module is None:
@@ -60,7 +60,7 @@ def _has_galaxy_server():
 
 def _wait_for_dataset_ready(client, dataset_id, history_id=None, max_wait=180, poll_interval=5):
     """Wait for a dataset to reach a downloadable terminal state."""
-    from cli_anything.galaxy.core.dataset import show_dataset
+    from galaxy_cli.core.dataset import show_dataset
 
     elapsed = 0
     while elapsed < max_wait:
@@ -86,7 +86,7 @@ needs_galaxy = pytest.mark.skipif(
 @needs_galaxy
 class TestServerConnection:
     def _client(self):
-        from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient
+        from galaxy_cli.utils.galaxy_backend import GalaxyClient
         return GalaxyClient()
 
     def test_server_version(self):
@@ -105,11 +105,11 @@ class TestServerConnection:
 @needs_galaxy
 class TestHistoryE2E:
     def _client(self):
-        from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient
+        from galaxy_cli.utils.galaxy_backend import GalaxyClient
         return GalaxyClient()
 
     def test_create_list_delete_history(self):
-        from cli_anything.galaxy.core.history import create_history, list_histories, delete_history
+        from galaxy_cli.core.history import create_history, list_histories, delete_history
 
         client = self._client()
 
@@ -133,12 +133,12 @@ class TestHistoryE2E:
 @needs_galaxy
 class TestDatasetE2E:
     def _client(self):
-        from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient
+        from galaxy_cli.utils.galaxy_backend import GalaxyClient
         return GalaxyClient()
 
     def test_upload_and_download(self):
-        from cli_anything.galaxy.core.history import create_history, delete_history
-        from cli_anything.galaxy.core.dataset import upload_dataset, download_dataset
+        from galaxy_cli.core.history import create_history, delete_history
+        from galaxy_cli.core.dataset import upload_dataset, download_dataset
 
         client = self._client()
         test_file = None
@@ -181,11 +181,11 @@ class TestDatasetE2E:
 @needs_galaxy
 class TestToolE2E:
     def _client(self):
-        from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient
+        from galaxy_cli.utils.galaxy_backend import GalaxyClient
         return GalaxyClient()
 
     def test_list_and_search_tools(self):
-        from cli_anything.galaxy.core.tool import list_tools, search_tools
+        from galaxy_cli.core.tool import list_tools, search_tools
 
         client = self._client()
         tools = list_tools(client)
@@ -193,7 +193,7 @@ class TestToolE2E:
         print(f"\n  Found {len(tools)} tools")
 
     def test_show_tool_details(self):
-        from cli_anything.galaxy.core.tool import list_tools, show_tool
+        from galaxy_cli.core.tool import list_tools, show_tool
 
         client = self._client()
         tools = list_tools(client)

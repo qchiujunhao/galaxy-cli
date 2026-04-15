@@ -1,10 +1,10 @@
-"""cli-anything REPL Skin — Unified terminal interface for all CLI harnesses.
+"""REPL Skin — Unified terminal interface for Galaxy CLI.
 
-Copy this file into your CLI package at:
-    cli_anything/<software>/utils/repl_skin.py
+Package layout:
+    galaxy_cli/utils/repl_skin.py
 
 Usage:
-    from cli_anything.<software>.utils.repl_skin import ReplSkin
+    from galaxy_cli.utils.repl_skin import ReplSkin
 
     skin = ReplSkin("shotcut", version="1.0.0")
     skin.print_banner()  # auto-detects skills/SKILL.md inside the package
@@ -114,8 +114,8 @@ class ReplSkin:
         self.version = version
 
         # Auto-detect skill path from package layout:
-        #   cli_anything/<software>/utils/repl_skin.py  (this file)
-        #   cli_anything/<software>/skills/SKILL.md     (target)
+        #   galaxy_cli/utils/repl_skin.py  (this file)
+        #   galaxy_cli/skills/SKILL.md     (target)
         if skill_path is None:
             from pathlib import Path
             _auto = Path(__file__).resolve().parent.parent / "skills" / "SKILL.md"

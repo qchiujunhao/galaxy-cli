@@ -169,8 +169,34 @@ def _normalize_input(inp):
     return entry
 
 
-def show_tool(client, tool_id):
-    """Show detailed info about a tool, including its inputs."""
+def _strip_input_help(inp):
+    """Recursively drop the verbose ``help`` field from a normalized input."""
+    if not isinstance(inp, dict):
+        return inp
+    inp.pop("help", None)
+    for nested_key in ("inputs", "cases"):
+        for child in inp.get(nested_key, []) or []:
+            if isinstance(child, dict):
+                _strip_input_help(child)
+                # conditional cases also carry their own input lists
+                for ci in child.get("inputs", []) or []:
+                    _strip_input_help(ci)
+    test_param = inp.get("test_param")
+    if isinstance(test_param, dict):
+        _strip_input_help(test_param)
+    return inp
+
+
+def show_tool(client, tool_id, full=False):
+    """Show detailed info about a tool, including its inputs.
+
+    By default, returns a compact record with the fields agents need to run
+    the tool: id, name, version, description, inputs, outputs. Pass
+    ``full=True`` to additionally include ``help``, ``edam_topics``,
+    ``edam_operations``, ``requirements``, and per-input ``help`` strings.
+    These fields are large and rarely needed for tool execution; including
+    them by default inflates LLM agent context.
+    """
     info = client.get(f"tools/{tool_id}", params={"io_details": True})
     inputs = [_normalize_input(inp) for inp in info.get("inputs", [])]
     outputs = []
@@ -180,21 +206,26 @@ def show_tool(client, tool_id):
             "format": out.get("format", ""),
             "label": out.get("label", ""),
         })
-    return {
+    result = {
         "id": info.get("id", tool_id),
         "name": info.get("name", ""),
         "version": info.get("version", ""),
         "description": info.get("description", ""),
-        "edam_topics": info.get("edam_topics", []),
-        "edam_operations": info.get("edam_operations", []),
-        "requirements": [
-            {"name": r.get("name", ""), "version": r.get("version", "")}
-            for r in info.get("requirements", [])
-        ],
         "inputs": inputs,
         "outputs": outputs,
-        "help": info.get("help", ""),
     }
+    if full:
+        result["edam_topics"] = info.get("edam_topics", [])
+        result["edam_operations"] = info.get("edam_operations", [])
+        result["requirements"] = [
+            {"name": r.get("name", ""), "version": r.get("version", "")}
+            for r in info.get("requirements", [])
+        ]
+        result["help"] = info.get("help", "")
+    else:
+        for inp in inputs:
+            _strip_input_help(inp)
+    return result
 
 
 def _collect_input_types(inputs):
@@ -222,20 +253,59 @@ def _normalize_tool_input(name, value, input_types):
     return value
 
 
+def _flatten_nested_inputs(inputs):
+    """Flatten nested dict/list inputs into Galaxy's pipe-encoded flat keys.
+
+    Galaxy's ``tools`` POST endpoint accepts repeats and conditionals as
+    flat keys joined by ``|`` with a 0-based index per repeat item, e.g.::
+
+        operations_0|op_name = mean
+        operations_0|op_column = 2
+        operations_1|op_name = sum
+
+    This helper accepts a JSON-friendly nested representation and produces
+    that flat form. Keys that already contain ``|`` are passed through.
+    Scalar values are returned as-is.
+    """
+    flat = {}
+
+    def _walk(prefix, value):
+        if isinstance(value, dict):
+            # Pass through dataset/collection refs unchanged.
+            if set(value.keys()) <= {"src", "id", "values"} and "id" in value:
+                flat[prefix] = value
+                return
+            for k, v in value.items():
+                child = f"{prefix}|{k}" if prefix else k
+                _walk(child, v)
+        elif isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
+            # Repeat block: index each item.
+            for idx, item in enumerate(value):
+                _walk(f"{prefix}_{idx}", item)
+        else:
+            flat[prefix] = value
+
+    for key, value in (inputs or {}).items():
+        _walk(key, value)
+    return flat
+
+
 def run_tool(client, tool_id, history_id, inputs=None):
     """Run a tool with given inputs in a history.
 
     Args:
         client: GalaxyClient instance.
         tool_id: Tool identifier.
-        history_id: Target history for outputs.
-        inputs: Dict of tool parameter name -> value.
+        history_id: Target history for outputs. Inputs may be a flat dict
+            using Galaxy's pipe-encoded keys (``operations_0|op_name``) or
+            a nested dict/list structure that will be flattened automatically.
     """
+    flat_inputs = _flatten_nested_inputs(inputs or {})
     tool_info = show_tool(client, tool_id)
     input_types = _collect_input_types(tool_info.get("inputs", []))
     normalized_inputs = {
         key: _normalize_tool_input(key, value, input_types)
-        for key, value in (inputs or {}).items()
+        for key, value in flat_inputs.items()
     }
 
     payload = {

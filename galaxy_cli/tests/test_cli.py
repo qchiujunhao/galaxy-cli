@@ -10,12 +10,12 @@ import pytest
 
 class TestCli:
     def test_json_mode_does_not_leak_between_invocations(self):
-        from cli_anything.galaxy.galaxy_cli import cli
+        from galaxy_cli.cli import cli
 
         runner = CliRunner()
         config = {"url": "https://galaxy.example.org", "api_key": "***...6789"}
 
-        with patch("cli_anything.galaxy.galaxy_cli.config_mod.show_config", return_value=config):
+        with patch("galaxy_cli.cli.config_mod.show_config", return_value=config):
             json_result = runner.invoke(cli, ["--json", "config", "show"])
             text_result = runner.invoke(cli, ["config", "show"])
 
@@ -25,14 +25,14 @@ class TestCli:
         assert text_result.output == "URL: https://galaxy.example.org\nAPI Key: ***...6789\n"
 
     def test_repl_args_allow_overriding_default_json_mode(self):
-        from cli_anything.galaxy.galaxy_cli import _normalize_repl_args
+        from galaxy_cli.cli import _normalize_repl_args
 
         assert _normalize_repl_args(["history", "list"], True) == ["--json", "history", "list"]
         assert _normalize_repl_args(["--no-json", "history", "list"], True) == ["--no-json", "history", "list"]
         assert _normalize_repl_args(["--json", "history", "list"], False) == ["--json", "history", "list"]
 
     def test_tool_run_wait_keeps_stdout_json_clean(self):
-        from cli_anything.galaxy.galaxy_cli import cli
+        from galaxy_cli.cli import cli
 
         runner = CliRunner()
         run_result = {
@@ -42,11 +42,11 @@ class TestCli:
         }
         wait_result = {"id": "job-1", "state": "ok", "waited_seconds": 5}
 
-        with patch("cli_anything.galaxy.galaxy_cli._get_client", return_value=object()), \
-             patch("cli_anything.galaxy.galaxy_cli._require_history", return_value="hist-1"), \
-             patch("cli_anything.galaxy.galaxy_cli.tool_mod.run_tool", return_value=run_result), \
-             patch("cli_anything.galaxy.galaxy_cli.job_mod.wait_for_job", return_value=wait_result), \
-             patch("cli_anything.galaxy.galaxy_cli.session_mod.track_job"):
+        with patch("galaxy_cli.cli._get_client", return_value=object()), \
+             patch("galaxy_cli.cli._require_history", return_value="hist-1"), \
+             patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result), \
+             patch("galaxy_cli.cli.job_mod.wait_for_job", return_value=wait_result), \
+             patch("galaxy_cli.cli.session_mod.track_job"):
             result = runner.invoke(
                 cli,
                 ["--json", "tool", "run", "fastp", "--wait"],
@@ -59,13 +59,13 @@ class TestCli:
         assert result.stderr == "Waiting for job job-1...\n"
 
     def test_invocation_wait_keeps_stdout_json_clean(self):
-        from cli_anything.galaxy.galaxy_cli import cli
+        from galaxy_cli.cli import cli
 
         runner = CliRunner()
         wait_result = {"id": "inv-1", "state": "scheduled", "waited_seconds": 12}
 
-        with patch("cli_anything.galaxy.galaxy_cli._get_client", return_value=object()), \
-             patch("cli_anything.galaxy.galaxy_cli.invocation_mod.wait_for_invocation", return_value=wait_result):
+        with patch("galaxy_cli.cli._get_client", return_value=object()), \
+             patch("galaxy_cli.cli.invocation_mod.wait_for_invocation", return_value=wait_result):
             result = runner.invoke(
                 cli,
                 ["--json", "invocation", "wait", "inv-1"],
@@ -78,7 +78,7 @@ class TestCli:
         assert result.stderr == "Waiting for invocation inv-1...\n"
 
     def test_main_returns_structured_json_for_collection_usage_errors(self):
-        from cli_anything.galaxy.galaxy_cli import EXIT_USER_ERROR, main
+        from galaxy_cli.cli import EXIT_USER_ERROR, main
 
         runner = CliRunner()
         with runner.isolated_filesystem(), \
@@ -98,8 +98,8 @@ class TestCli:
                  ],
              ), \
              patch("click.echo") as mock_echo, \
-             patch("cli_anything.galaxy.galaxy_cli._get_client", return_value=object()), \
-             patch("cli_anything.galaxy.galaxy_cli._require_history", return_value="hist-1"):
+             patch("galaxy_cli.cli._get_client", return_value=object()), \
+             patch("galaxy_cli.cli._require_history", return_value="hist-1"):
             with pytest.raises(SystemExit) as exc:
                 main()
 

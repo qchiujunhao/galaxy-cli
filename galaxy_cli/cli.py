@@ -10,14 +10,14 @@ import shlex
 import click
 from click.exceptions import Exit
 
-from cli_anything.galaxy import __version__
-from cli_anything.galaxy.utils.galaxy_backend import (
+from galaxy_cli import __version__
+from galaxy_cli.utils.galaxy_backend import (
     GalaxyClient,
     GalaxyBackendError,
     EXIT_OK,
     EXIT_USER_ERROR,
 )
-from cli_anything.galaxy.core import (
+from galaxy_cli.core import (
     collection as collection_mod,
     config as config_mod,
     history as history_mod,
@@ -50,13 +50,17 @@ def _normalize_repl_args(args, default_json_mode):
 
 
 def _output(data, human_func=None):
-    """Output data as JSON or human-readable."""
+    """Output data as JSON or human-readable.
+
+    JSON mode emits compact single-line JSON to minimize tokens for LLM
+    agents that re-read this output on every turn.
+    """
     if _json_mode_enabled():
-        click.echo(json.dumps(data, indent=2, default=str))
+        click.echo(json.dumps(data, separators=(",", ":"), default=str))
     elif human_func:
         human_func(data)
     else:
-        click.echo(json.dumps(data, indent=2, default=str))
+        click.echo(json.dumps(data, separators=(",", ":"), default=str))
 
 
 def _progress(message):
@@ -102,6 +106,22 @@ def cli(ctx, url, api_key, history_id, json_mode):
 
     Connect to a running Galaxy server and manage histories, datasets,
     tools, workflows, and jobs from the command line.
+
+    \b
+    Quick start (typical tool task):
+      source .env                      # set GALAXY_URL + GALAXY_API_KEY
+      galaxy-cli --json history create "my run"
+      galaxy-cli --json dataset upload data.tsv --history-id HID
+      galaxy-cli --json tool search "cut columns"
+      galaxy-cli --json tool show Cut1
+      galaxy-cli --json tool run Cut1 --history-id HID -i input=DSID --wait
+      galaxy-cli --json dataset show OUTPUT_ID
+
+    \b
+    Quick start (workflow task):
+      galaxy-cli --json workflow import workflow.ga
+      galaxy-cli --json workflow show WF_ID
+      galaxy-cli --json workflow run WF_ID --history-id HID -i 0=DSID --wait
     """
     ctx.ensure_object(dict)
     ctx.obj["url"] = url
@@ -191,7 +211,18 @@ def history_list(ctx, deleted, limit):
 @click.argument("name", default="Unnamed history")
 @click.pass_context
 def history_create(ctx, name):
-    """Create a new history."""
+    """Create a new history and set it as the current working history.
+
+    \b
+    Examples:
+      galaxy-cli --json history create "benchmark-T01"
+      galaxy-cli --json history create "RNA-seq analysis"
+
+    \b
+    The returned JSON includes the history ID:
+      {"id": "abc123...", "name": "benchmark-T01", ...}
+    Use the id value with --history-id on subsequent commands.
+    """
     client = _get_client(ctx)
     result = history_mod.create_history(client, name=name)
     session_mod.set_current_history(result["id"], result["name"])
@@ -282,7 +313,18 @@ def dataset_list(ctx, history_id, limit):
 @click.option("--dbkey", default="?", help="Genome build")
 @click.pass_context
 def dataset_upload(ctx, file_path, history_id, file_type, dbkey):
-    """Upload a local file to a Galaxy history."""
+    """Upload a local file to a Galaxy history.
+
+    \b
+    Examples:
+      galaxy-cli --json dataset upload data.tabular --history-id HID
+      galaxy-cli --json dataset upload reads.fastq --history-id HID --file-type fastqsanger
+
+    \b
+    The returned JSON includes the dataset ID:
+      {"id": "xyz789...", "name": "data.tabular", "state": "ok", ...}
+    Use the id value as a tool input:  -i input=hda:DATASET_ID
+    """
     client = _get_client(ctx)
     hid = history_id or _require_history(ctx)
     result = dataset_mod.upload_dataset(client, hid, file_path, file_type=file_type, dbkey=dbkey)
@@ -370,14 +412,18 @@ def collection_create(ctx, name, history_id, ctype, elements, pairs):
     """Create a dataset collection from uploaded datasets.
 
     \b
-    List collection:
-      galaxy-cli collection create "my list" -e DATASET_ID1 -e DATASET_ID2
-      galaxy-cli collection create "my list" -e sample1=ID1 -e sample2=ID2
+    Upload datasets first, then group them into a collection.
+    Use collection IDs as workflow/tool inputs with the hdca: prefix.
 
     \b
-    Paired collection:
-      galaxy-cli collection create "my pairs" --collection-type list:paired \\
-          -p "sample1:FORWARD_ID:REVERSE_ID" -p "sample2:FWD_ID:REV_ID"
+    Examples:
+      galaxy-cli --json collection create "samples" --history-id HID -e DSID1 -e DSID2
+      galaxy-cli --json collection create "samples" --history-id HID -e s1=DSID1 -e s2=DSID2
+      galaxy-cli --json collection create "pairs" --history-id HID --collection-type list:paired -p "sA:FWD:REV"
+
+    \b
+    The returned collection ID can be used as a tool/workflow input:
+      -i input=hdca:COLLECTION_ID
     """
     client = _get_client(ctx)
     hid = history_id or _require_history(ctx)
@@ -507,11 +553,37 @@ def tool_search(ctx, query):
 
 @tool_group.command("show")
 @click.argument("tool_id")
+@click.option(
+    "--full",
+    is_flag=True,
+    help="Include verbose fields (help text, EDAM ontology, requirements). "
+    "Off by default to keep output compact.",
+)
 @click.pass_context
-def tool_show(ctx, tool_id):
-    """Show detailed tool information including inputs/outputs."""
+def tool_show(ctx, tool_id, full):
+    """Show tool inputs and outputs so you know how to call tool run.
+
+    \b
+    By default, returns a compact record: id, name, version, description,
+    inputs (with names, types, options, defaults), and outputs.
+    Pass --full to include help text, EDAM ontology, and requirements.
+
+    \b
+    Examples:
+      galaxy-cli --json tool show Cut1
+      galaxy-cli --json tool show datamash_ops
+      galaxy-cli --json tool show Cut1 --full
+
+    \b
+    Key fields in each input entry:
+      name      — the parameter name to pass to tool run via -i name=value
+      type      — data, select, boolean, integer, float, text, repeat, ...
+      options   — for select types, the allowed {value, label} pairs
+      default   — the default value if the parameter is omitted
+      optional  — whether the parameter can be skipped
+    """
     client = _get_client(ctx)
-    result = tool_mod.show_tool(client, tool_id)
+    result = tool_mod.show_tool(client, tool_id, full=full)
     def _fmt_input(inp, indent=4):
         """Format a single input parameter for human display."""
         prefix = " " * indent
@@ -582,15 +654,69 @@ def tool_show(ctx, tool_id):
 @click.argument("tool_id")
 @click.option("--history-id", default=None)
 @click.option("--input", "-i", "inputs", multiple=True, help="Tool input as key=value")
+@click.option(
+    "--inputs-json",
+    "inputs_json",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Path to JSON file with tool inputs. Keys are input names; values may "
+    "be nested dicts/lists for repeats and conditionals. -i flags override.",
+)
 @click.option("--wait", is_flag=True, help="Wait for job to complete")
 @click.option("--timeout", default=600, help="Max wait time in seconds (with --wait)")
 @click.option("--poll-interval", default=5, help="Seconds between status checks (with --wait)")
 @click.pass_context
-def tool_run(ctx, tool_id, history_id, inputs, wait, timeout, poll_interval):
-    """Run a tool with given inputs."""
+def tool_run(ctx, tool_id, history_id, inputs, inputs_json, wait, timeout, poll_interval):
+    """Run a tool with given inputs.
+
+    \b
+    Inputs can be provided two ways:
+      -i key=value           (one flag per parameter, simple values)
+      --inputs-json file.json (entire input dict, supports nesting)
+
+    Both can be combined; -i flags override matching keys from --inputs-json.
+
+    \b
+    Parameter encoding rules (Galaxy native format):
+      • Datasets:     -i input=hda:DATASET_ID  (or just the dataset id)
+      • Collections:  -i input=hdca:COLLECTION_ID
+      • Booleans:     -i some_flag=true        (use true / false, not yes/no)
+      • Repeat blocks use pipe syntax with a 0-based index per item:
+            -i operations_0|op_name=mean
+            -i operations_0|op_column=2
+            -i operations_1|op_name=sum
+            -i operations_1|op_column=3
+      • Conditionals are flattened the same way:
+            -i cond|selector=advanced
+            -i cond|threshold=0.5
+
+    \b
+    Equivalent --inputs-json file:
+      {
+        "input": "hda:abc123",
+        "operations": [
+          {"op_name": "mean", "op_column": "2"},
+          {"op_name": "sum",  "op_column": "3"}
+        ],
+        "cond": {"selector": "advanced", "threshold": "0.5"}
+      }
+
+    Use `tool show <tool_id>` to discover the input names and types.
+    """
     client = _get_client(ctx)
     hid = history_id or _require_history(ctx)
     input_dict = {}
+    if inputs_json:
+        try:
+            with open(inputs_json, "r") as fh:
+                loaded = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise click.UsageError(f"Failed to read --inputs-json file: {exc}")
+        if not isinstance(loaded, dict):
+            raise click.UsageError(
+                "--inputs-json file must contain a JSON object at the top level."
+            )
+        input_dict.update(loaded)
     for inp in inputs:
         if "=" not in inp:
             raise click.UsageError(f"Invalid input format: {inp}. Use key=value")
@@ -789,7 +915,27 @@ def workflow_export(ctx, workflow_id, output_path):
 @click.option("--poll-interval", default=10, help="Seconds between status checks (default: 10)")
 @click.pass_context
 def workflow_run(ctx, workflow_id, history_id, new_history, inputs, wait, timeout, poll_interval):
-    """Run a workflow."""
+    """Run a workflow with dataset/collection inputs mapped to steps.
+
+    \b
+    Each -i flag maps a workflow step index to a dataset or collection.
+    Use `workflow show` first to see the step indices and input types.
+
+    \b
+    Examples:
+      galaxy-cli --json workflow run WF_ID --history-id HID -i 0=DSID --wait
+      galaxy-cli --json workflow run WF_ID --history-id HID -i 0=DSID -i 1=hdca:COLL_ID --wait
+      galaxy-cli --json workflow run WF_ID --new-history "results" -i 0=DSID --wait
+
+    \b
+    Input values:
+      Dataset:    -i 0=DATASET_ID       (hda: prefix optional)
+      Collection: -i 0=hdca:COLL_ID     (hdca: prefix required)
+
+    \b
+    --wait blocks until the invocation finishes (default timeout: 1800s).
+    Without --wait, returns immediately with the invocation ID.
+    """
     client = _get_client(ctx)
     hid = history_id
     if not hid and not new_history:
@@ -1023,7 +1169,7 @@ def session_clear():
 @click.pass_context
 def repl(ctx):
     """Enter interactive REPL mode."""
-    from cli_anything.galaxy.utils.repl_skin import ReplSkin
+    from galaxy_cli.utils.repl_skin import ReplSkin
 
     skin = ReplSkin("galaxy", version=__version__)
     skin.print_banner()

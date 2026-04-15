@@ -2,7 +2,7 @@
 
 import os
 
-from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient
+from galaxy_cli.utils.galaxy_backend import GalaxyClient
 
 
 def set_url(url):

@@ -67,5 +67,5 @@ galaxy-cli
 ## Tests
 
 ```bash
-python3 -m pytest cli_anything/galaxy/tests/ -v
+python3 -m pytest galaxy_cli/tests/ -v
 ```

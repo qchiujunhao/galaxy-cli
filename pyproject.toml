@@ -26,17 +26,16 @@ classifiers = [
 ]
 
 [project.scripts]
-galaxy-cli = "cli_anything.galaxy.galaxy_cli:main"
+galaxy-cli = "galaxy_cli.cli:main"
 
 [tool.setuptools.dynamic]
-version = { attr = "cli_anything.galaxy.__version__" }
+version = { attr = "galaxy_cli.__version__" }
 
 [tool.setuptools.packages.find]
-include = ["cli_anything*"]
-namespaces = true
+include = ["galaxy_cli*"]
 
 [tool.setuptools.package-data]
-"cli_anything.galaxy" = ["skills/*.md"]
+"galaxy_cli" = ["skills/*.md"]
 
 [tool.pytest.ini_options]
-testpaths = ["cli_anything/galaxy/tests"]
+testpaths = ["galaxy_cli/tests"]

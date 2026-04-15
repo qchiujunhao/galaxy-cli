@@ -120,11 +120,11 @@ galaxy-cli
 
 ```bash
 cd agent-harness
-python3 -m pytest cli_anything/galaxy/tests/ -v -s
+python3 -m pytest galaxy_cli/tests/ -v -s
 ```
 
 Force testing against installed command:
 
 ```bash
-CLI_ANYTHING_FORCE_INSTALLED=1 python3 -m pytest cli_anything/galaxy/tests/ -v -s
+CLI_ANYTHING_FORCE_INSTALLED=1 python3 -m pytest galaxy_cli/tests/ -v -s
 ```

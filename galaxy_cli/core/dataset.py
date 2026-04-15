@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from cli_anything.galaxy.utils.galaxy_backend import (
+from galaxy_cli.utils.galaxy_backend import (
     EXIT_USER_ERROR,
     GalaxyBackendError,
 )

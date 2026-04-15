@@ -15,8 +15,8 @@ import requests
 
 class TestConfig:
     def test_set_url(self, tmp_path):
-        from cli_anything.galaxy.core.config import set_url
-        from cli_anything.galaxy.utils import galaxy_backend as gb
+        from galaxy_cli.core.config import set_url
+        from galaxy_cli.utils import galaxy_backend as gb
 
         cfg_file = tmp_path / "config.json"
         with patch.object(gb, "DEFAULT_CONFIG_FILE", cfg_file), \
@@ -27,8 +27,8 @@ class TestConfig:
             assert data["url"] == "https://galaxy.example.org"
 
     def test_set_key(self, tmp_path):
-        from cli_anything.galaxy.core.config import set_key
-        from cli_anything.galaxy.utils import galaxy_backend as gb
+        from galaxy_cli.core.config import set_key
+        from galaxy_cli.utils import galaxy_backend as gb
 
         cfg_file = tmp_path / "config.json"
         with patch.object(gb, "DEFAULT_CONFIG_FILE", cfg_file), \
@@ -39,8 +39,8 @@ class TestConfig:
             assert data["api_key"] == "abc123def456"
 
     def test_show_config(self, tmp_path):
-        from cli_anything.galaxy.core.config import show_config
-        from cli_anything.galaxy.utils import galaxy_backend as gb
+        from galaxy_cli.core.config import show_config
+        from galaxy_cli.utils import galaxy_backend as gb
 
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"url": "https://g.org", "api_key": "abcdef123456789"}))
@@ -54,8 +54,8 @@ class TestConfig:
             assert result["api_key_source"] == "config"
 
     def test_show_config_prefers_environment(self, tmp_path):
-        from cli_anything.galaxy.core.config import show_config
-        from cli_anything.galaxy.utils import galaxy_backend as gb
+        from galaxy_cli.core.config import show_config
+        from galaxy_cli.utils import galaxy_backend as gb
 
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"url": "https://config.g.org", "api_key": "abcdef123456789"}))
@@ -71,8 +71,8 @@ class TestConfig:
             assert result["api_key_source"] == "env"
 
     def test_save_config_restricts_permissions(self, tmp_path):
-        from cli_anything.galaxy.core.config import set_key
-        from cli_anything.galaxy.utils import galaxy_backend as gb
+        from galaxy_cli.core.config import set_key
+        from galaxy_cli.utils import galaxy_backend as gb
 
         cfg_file = tmp_path / "config.json"
         with patch.object(gb, "DEFAULT_CONFIG_FILE", cfg_file), \
@@ -83,8 +83,8 @@ class TestConfig:
         assert tmp_path.stat().st_mode & 0o777 == 0o700
 
     def test_show_config_empty(self, tmp_path):
-        from cli_anything.galaxy.core.config import show_config
-        from cli_anything.galaxy.utils import galaxy_backend as gb
+        from galaxy_cli.core.config import show_config
+        from galaxy_cli.utils import galaxy_backend as gb
 
         cfg_file = tmp_path / "nonexistent.json"
         env = {k: v for k, v in os.environ.items() if k not in ("GALAXY_URL", "GALAXY_API_KEY")}
@@ -97,7 +97,7 @@ class TestConfig:
             assert result["api_key_source"] == "unset"
 
     def test_test_connection(self):
-        from cli_anything.galaxy.core.config import test_connection
+        from galaxy_cli.core.config import test_connection
 
         mock_client = MagicMock()
         mock_client.get_version.return_value = {"version_major": "24.1", "version_minor": "dev0"}
@@ -108,10 +108,10 @@ class TestConfig:
         assert result["user"] == "testuser"
 
     def test_ssl_error_is_normalized(self):
-        from cli_anything.galaxy.utils.galaxy_backend import GalaxyBackendError, GalaxyClient
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError, GalaxyClient
 
         client = GalaxyClient(url="https://usegalaxy.org", api_key="abc123")
-        with patch("cli_anything.galaxy.utils.galaxy_backend.requests.request") as mock_request:
+        with patch("galaxy_cli.utils.galaxy_backend.requests.request") as mock_request:
             mock_request.side_effect = requests.exceptions.SSLError("tls failure")
             with pytest.raises(GalaxyBackendError) as exc:
                 client.get_version()
@@ -128,7 +128,7 @@ class TestHistory:
         return MagicMock()
 
     def test_list_histories(self):
-        from cli_anything.galaxy.core.history import list_histories
+        from galaxy_cli.core.history import list_histories
 
         client = self._mock_client()
         client.get.return_value = [
@@ -142,7 +142,7 @@ class TestHistory:
         client.get.assert_called_once()
 
     def test_create_history(self):
-        from cli_anything.galaxy.core.history import create_history
+        from galaxy_cli.core.history import create_history
 
         client = self._mock_client()
         client.post.return_value = {"id": "h_new", "name": "My Analysis", "state": "new", "create_time": "2024-01-01"}
@@ -151,7 +151,7 @@ class TestHistory:
         assert result["name"] == "My Analysis"
 
     def test_show_history(self):
-        from cli_anything.galaxy.core.history import show_history
+        from galaxy_cli.core.history import show_history
 
         client = self._mock_client()
         client.get.return_value = {
@@ -165,7 +165,7 @@ class TestHistory:
         assert result["annotation"] == "test annotation"
 
     def test_show_history_with_contents(self):
-        from cli_anything.galaxy.core.history import show_history
+        from galaxy_cli.core.history import show_history
 
         client = self._mock_client()
         client.get.side_effect = [
@@ -180,7 +180,7 @@ class TestHistory:
         assert result["contents"][0]["name"] == "data.txt"
 
     def test_delete_history(self):
-        from cli_anything.galaxy.core.history import delete_history
+        from galaxy_cli.core.history import delete_history
 
         client = self._mock_client()
         client.delete.return_value = {}
@@ -190,7 +190,7 @@ class TestHistory:
         assert result["purged"] is False
 
     def test_delete_history_purge(self):
-        from cli_anything.galaxy.core.history import delete_history
+        from galaxy_cli.core.history import delete_history
 
         client = self._mock_client()
         client.delete.return_value = {}
@@ -198,7 +198,7 @@ class TestHistory:
         assert result["purged"] is True
 
     def test_update_history(self):
-        from cli_anything.galaxy.core.history import update_history
+        from galaxy_cli.core.history import update_history
 
         client = self._mock_client()
         client.put.return_value = {"id": "h1", "name": "Renamed"}
@@ -207,7 +207,7 @@ class TestHistory:
         assert result["name"] == "Renamed"
 
     def test_export_history(self):
-        from cli_anything.galaxy.core.history import export_history
+        from galaxy_cli.core.history import export_history
 
         client = self._mock_client()
         client.put.return_value = {"download_url": "/api/histories/h1/exports/ready"}
@@ -222,7 +222,7 @@ class TestDataset:
         return MagicMock()
 
     def test_upload_dataset(self):
-        from cli_anything.galaxy.core.dataset import upload_dataset
+        from galaxy_cli.core.dataset import upload_dataset
 
         client = self._mock_client()
         client.upload_file.return_value = {
@@ -233,7 +233,7 @@ class TestDataset:
         assert result["name"] == "reads.fastq"
 
     def test_show_dataset(self):
-        from cli_anything.galaxy.core.dataset import show_dataset
+        from galaxy_cli.core.dataset import show_dataset
 
         client = self._mock_client()
         client.get.return_value = {
@@ -246,8 +246,8 @@ class TestDataset:
         assert result["file_size"] == 1024
 
     def test_show_dataset_requires_non_empty_id(self):
-        from cli_anything.galaxy.core.dataset import show_dataset
-        from cli_anything.galaxy.utils.galaxy_backend import GalaxyBackendError
+        from galaxy_cli.core.dataset import show_dataset
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
 
         client = self._mock_client()
         with pytest.raises(GalaxyBackendError) as exc:
@@ -257,8 +257,8 @@ class TestDataset:
         assert "Dataset ID is required" in str(exc.value)
 
     def test_show_dataset_rejects_non_dict_response(self):
-        from cli_anything.galaxy.core.dataset import show_dataset
-        from cli_anything.galaxy.utils.galaxy_backend import GalaxyBackendError
+        from galaxy_cli.core.dataset import show_dataset
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
 
         client = self._mock_client()
         client.get.return_value = []
@@ -269,7 +269,7 @@ class TestDataset:
         assert "Unexpected response" in str(exc.value)
 
     def test_show_dataset_with_history(self):
-        from cli_anything.galaxy.core.dataset import show_dataset
+        from galaxy_cli.core.dataset import show_dataset
 
         client = self._mock_client()
         client.get.return_value = {"id": "d1", "name": "x", "state": "ok", "extension": "bed"}
@@ -277,7 +277,7 @@ class TestDataset:
         client.get.assert_called_with("histories/h1/contents/d1")
 
     def test_download_dataset(self, tmp_path):
-        from cli_anything.galaxy.core.dataset import download_dataset
+        from galaxy_cli.core.dataset import download_dataset
 
         client = self._mock_client()
         out_file = tmp_path / "output.txt"
@@ -287,7 +287,7 @@ class TestDataset:
         assert result["size"] == 100
 
     def test_peek_dataset(self):
-        from cli_anything.galaxy.core.dataset import peek_dataset
+        from galaxy_cli.core.dataset import peek_dataset
 
         client = self._mock_client()
         client.get.return_value = {"peek": "line1\nline2\nline3\nline4\nline5"}
@@ -296,7 +296,7 @@ class TestDataset:
         assert result["lines"][0] == "line1"
 
     def test_peek_dataset_supports_data_list_payload(self):
-        from cli_anything.galaxy.core.dataset import peek_dataset
+        from galaxy_cli.core.dataset import peek_dataset
 
         client = self._mock_client()
         client.get.return_value = {"data": ["line1\n", "line2\n", "line3\n", "line4\n"]}
@@ -304,7 +304,7 @@ class TestDataset:
         assert result["lines"] == ["line1", "line2", "line3"]
 
     def test_peek_dataset_supports_ck_data_fallback(self):
-        from cli_anything.galaxy.core.dataset import peek_dataset
+        from galaxy_cli.core.dataset import peek_dataset
 
         client = self._mock_client()
         client.get.side_effect = [
@@ -315,7 +315,7 @@ class TestDataset:
         assert result["lines"] == ["line1", "line2", "line3"]
 
     def test_delete_dataset(self):
-        from cli_anything.galaxy.core.dataset import delete_dataset
+        from galaxy_cli.core.dataset import delete_dataset
 
         client = self._mock_client()
         client.put.return_value = {}
@@ -323,7 +323,7 @@ class TestDataset:
         assert result["status"] == "deleted"
 
     def test_list_datasets(self):
-        from cli_anything.galaxy.core.dataset import list_datasets
+        from galaxy_cli.core.dataset import list_datasets
 
         client = self._mock_client()
         client.get.return_value = [
@@ -343,7 +343,7 @@ class TestTool:
         return MagicMock()
 
     def test_list_tools(self):
-        from cli_anything.galaxy.core.tool import list_tools
+        from galaxy_cli.core.tool import list_tools
 
         client = self._mock_client()
         client.get.return_value = [
@@ -355,7 +355,7 @@ class TestTool:
         assert result[0]["id"] == "fastqc"
 
     def test_list_tools_resolves_string_search_hits(self):
-        from cli_anything.galaxy.core.tool import list_tools
+        from galaxy_cli.core.tool import list_tools
 
         client = self._mock_client()
         client.get.side_effect = [
@@ -380,7 +380,7 @@ class TestTool:
         ]
 
     def test_search_tools(self):
-        from cli_anything.galaxy.core.tool import search_tools
+        from galaxy_cli.core.tool import search_tools
 
         client = self._mock_client()
         client.get.return_value = [
@@ -390,7 +390,7 @@ class TestTool:
         assert len(result) == 1
 
     def test_search_tools_keyword_fallback(self):
-        from cli_anything.galaxy.core.tool import search_tools
+        from galaxy_cli.core.tool import search_tools
 
         client = self._mock_client()
         client.get.side_effect = [
@@ -422,7 +422,7 @@ class TestTool:
         ]
 
     def test_show_tool(self):
-        from cli_anything.galaxy.core.tool import show_tool
+        from galaxy_cli.core.tool import show_tool
 
         client = self._mock_client()
         client.get.return_value = {
@@ -438,7 +438,7 @@ class TestTool:
         assert len(result["outputs"]) == 1
 
     def test_run_tool(self):
-        from cli_anything.galaxy.core.tool import run_tool
+        from galaxy_cli.core.tool import run_tool
 
         client = self._mock_client()
         client.get.return_value = {
@@ -460,7 +460,7 @@ class TestTool:
         assert len(result["outputs"]) == 1
 
     def test_run_tool_wraps_dataset_input(self):
-        from cli_anything.galaxy.core.tool import run_tool
+        from galaxy_cli.core.tool import run_tool
 
         client = self._mock_client()
         dataset_id = "f9cad7b01a4721358dba0ff950c535fa"
@@ -481,7 +481,7 @@ class TestTool:
         assert kwargs["json_data"]["inputs"]["input_file"] == {"src": "hda", "id": dataset_id}
 
     def test_run_tool_supports_explicit_dataset_src_prefix(self):
-        from cli_anything.galaxy.core.tool import run_tool
+        from galaxy_cli.core.tool import run_tool
 
         client = self._mock_client()
         dataset_id = "f9cad7b01a4721358dba0ff950c535fa"
@@ -502,7 +502,7 @@ class TestTool:
         assert kwargs["json_data"]["inputs"]["reads"] == {"src": "hdca", "id": dataset_id}
 
     def test_run_tool_keeps_plain_scalar_inputs(self):
-        from cli_anything.galaxy.core.tool import run_tool
+        from galaxy_cli.core.tool import run_tool
 
         client = self._mock_client()
         client.get.return_value = {
@@ -543,7 +543,7 @@ class TestJob:
         return MagicMock()
 
     def test_list_jobs(self):
-        from cli_anything.galaxy.core.job import list_jobs
+        from galaxy_cli.core.job import list_jobs
 
         client = self._mock_client()
         client.get.return_value = [
@@ -554,7 +554,7 @@ class TestJob:
         assert result[0]["state"] == "ok"
 
     def test_show_job(self):
-        from cli_anything.galaxy.core.job import show_job
+        from galaxy_cli.core.job import show_job
 
         client = self._mock_client()
         client.get.return_value = {
@@ -568,7 +568,7 @@ class TestJob:
         assert result["exit_code"] == 0
 
     def test_show_job_full(self):
-        from cli_anything.galaxy.core.job import show_job
+        from galaxy_cli.core.job import show_job
 
         client = self._mock_client()
         client.get.return_value = {
@@ -584,7 +584,7 @@ class TestJob:
         assert "outputs" in result
 
     def test_cancel_job(self):
-        from cli_anything.galaxy.core.job import cancel_job
+        from galaxy_cli.core.job import cancel_job
 
         client = self._mock_client()
         client.delete.return_value = {}
@@ -592,7 +592,7 @@ class TestJob:
         assert result["status"] == "cancelled"
 
     def test_wait_for_job_ok(self):
-        from cli_anything.galaxy.core.job import wait_for_job
+        from galaxy_cli.core.job import wait_for_job
 
         client = self._mock_client()
         client.get.return_value = {"state": "ok", "exit_code": 0}
@@ -600,7 +600,7 @@ class TestJob:
         assert result["state"] == "ok"
 
     def test_wait_for_job_timeout(self):
-        from cli_anything.galaxy.core.job import wait_for_job
+        from galaxy_cli.core.job import wait_for_job
 
         client = self._mock_client()
         client.get.return_value = {"state": "running"}
@@ -615,7 +615,7 @@ class TestWorkflow:
         return MagicMock()
 
     def test_list_workflows(self):
-        from cli_anything.galaxy.core.workflow import list_workflows
+        from galaxy_cli.core.workflow import list_workflows
 
         client = self._mock_client()
         client.get.return_value = [
@@ -627,7 +627,7 @@ class TestWorkflow:
         assert result[0]["step_count"] == 5
 
     def test_show_workflow(self):
-        from cli_anything.galaxy.core.workflow import show_workflow
+        from galaxy_cli.core.workflow import show_workflow
 
         client = self._mock_client()
         client.get.return_value = {
@@ -646,7 +646,7 @@ class TestWorkflow:
         assert "0" in result["steps"]
 
     def test_import_workflow_from_file(self, tmp_path):
-        from cli_anything.galaxy.core.workflow import import_workflow
+        from galaxy_cli.core.workflow import import_workflow
 
         client = self._mock_client()
         client.post.return_value = {"id": "w_new", "name": "Imported WF"}
@@ -656,7 +656,7 @@ class TestWorkflow:
         assert result["status"] == "imported"
 
     def test_export_workflow(self, tmp_path):
-        from cli_anything.galaxy.core.workflow import export_workflow
+        from galaxy_cli.core.workflow import export_workflow
 
         client = self._mock_client()
         client.get.return_value = {"name": "WF", "steps": {}}
@@ -666,7 +666,7 @@ class TestWorkflow:
         assert out_file.exists()
 
     def test_run_workflow(self):
-        from cli_anything.galaxy.core.workflow import run_workflow
+        from galaxy_cli.core.workflow import run_workflow
 
         client = self._mock_client()
         client.post.return_value = {"id": "inv1", "state": "new", "history_id": "h1"}
@@ -675,7 +675,7 @@ class TestWorkflow:
         assert result["id"] == "inv1"
 
     def test_run_workflow_supports_collection_refs(self):
-        from cli_anything.galaxy.core.workflow import run_workflow
+        from galaxy_cli.core.workflow import run_workflow
 
         client = self._mock_client()
         client.post.return_value = {"id": "inv1", "state": "new", "history_id": "h1"}
@@ -694,7 +694,7 @@ class TestWorkflow:
         }
 
     def test_delete_workflow(self):
-        from cli_anything.galaxy.core.workflow import delete_workflow
+        from galaxy_cli.core.workflow import delete_workflow
 
         client = self._mock_client()
         client.delete.return_value = {}
@@ -709,7 +709,7 @@ class TestInvocation:
         return MagicMock()
 
     def test_list_invocations(self):
-        from cli_anything.galaxy.core.invocation import list_invocations
+        from galaxy_cli.core.invocation import list_invocations
 
         client = self._mock_client()
         client.get.return_value = [
@@ -720,7 +720,7 @@ class TestInvocation:
         assert len(result) == 1
 
     def test_show_invocation(self):
-        from cli_anything.galaxy.core.invocation import show_invocation
+        from galaxy_cli.core.invocation import show_invocation
 
         client = self._mock_client()
         client.get.return_value = {
@@ -735,7 +735,7 @@ class TestInvocation:
         assert len(result["steps"]) == 1
 
     def test_cancel_invocation(self):
-        from cli_anything.galaxy.core.invocation import cancel_invocation
+        from galaxy_cli.core.invocation import cancel_invocation
 
         client = self._mock_client()
         client.delete.return_value = {}
@@ -743,7 +743,7 @@ class TestInvocation:
         assert result["status"] == "cancelled"
 
     def test_wait_for_invocation_returns_on_failed_step(self):
-        from cli_anything.galaxy.core.invocation import wait_for_invocation
+        from galaxy_cli.core.invocation import wait_for_invocation
 
         client = self._mock_client()
         client.get.return_value = {
@@ -762,7 +762,7 @@ class TestInvocation:
         assert result["failed_steps"][0]["job_id"] == "j2"
 
     def test_wait_for_invocation_waits_through_scheduled_until_jobs_finish(self):
-        from cli_anything.galaxy.core.invocation import wait_for_invocation
+        from galaxy_cli.core.invocation import wait_for_invocation
 
         client = self._mock_client()
         client.get.side_effect = [
@@ -780,7 +780,7 @@ class TestInvocation:
             {"id": "j1", "state": "ok", "exit_code": 0},
         ]
 
-        with patch("cli_anything.galaxy.core.invocation.time.sleep"):
+        with patch("galaxy_cli.core.invocation.time.sleep"):
             result = wait_for_invocation(client, "inv1", max_wait=2, poll_interval=1)
 
         assert result["state"] == "ok"
@@ -789,7 +789,7 @@ class TestInvocation:
         assert result["jobs"][0]["id"] == "j1"
 
     def test_wait_for_invocation_returns_on_failed_job(self):
-        from cli_anything.galaxy.core.invocation import wait_for_invocation
+        from galaxy_cli.core.invocation import wait_for_invocation
 
         client = self._mock_client()
         client.get.side_effect = [
@@ -808,7 +808,7 @@ class TestInvocation:
         assert result["failed_jobs"][0]["id"] == "j1"
 
     def test_wait_for_invocation_timeout(self):
-        from cli_anything.galaxy.core.invocation import wait_for_invocation
+        from galaxy_cli.core.invocation import wait_for_invocation
 
         client = self._mock_client()
         client.get.return_value = {"id": "inv1", "state": "new", "steps": []}
@@ -824,7 +824,7 @@ class TestLibrary:
         return MagicMock()
 
     def test_list_libraries(self):
-        from cli_anything.galaxy.core.library import list_libraries
+        from galaxy_cli.core.library import list_libraries
 
         client = self._mock_client()
         client.get.return_value = [
@@ -835,7 +835,7 @@ class TestLibrary:
         assert result[0]["name"] == "Shared Data"
 
     def test_create_library(self):
-        from cli_anything.galaxy.core.library import create_library
+        from galaxy_cli.core.library import create_library
 
         client = self._mock_client()
         client.post.return_value = {"id": "lib_new", "name": "New Lib"}
@@ -843,7 +843,7 @@ class TestLibrary:
         assert result["status"] == "created"
 
     def test_show_library(self):
-        from cli_anything.galaxy.core.library import show_library
+        from galaxy_cli.core.library import show_library
 
         client = self._mock_client()
         client.get.return_value = {
@@ -854,7 +854,7 @@ class TestLibrary:
         assert result["name"] == "Shared"
 
     def test_list_library_contents(self):
-        from cli_anything.galaxy.core.library import list_library_contents
+        from galaxy_cli.core.library import list_library_contents
 
         client = self._mock_client()
         client.get.return_value = [
@@ -865,7 +865,7 @@ class TestLibrary:
         assert result[0]["type"] == "folder"
 
     def test_delete_library(self):
-        from cli_anything.galaxy.core.library import delete_library
+        from galaxy_cli.core.library import delete_library
 
         client = self._mock_client()
         client.delete.return_value = {}
@@ -877,14 +877,14 @@ class TestLibrary:
 
 class TestSession:
     def test_load_session_new(self, tmp_path):
-        from cli_anything.galaxy.core.session import load_session
+        from galaxy_cli.core.session import load_session
 
         result = load_session(session_path=str(tmp_path / "nonexistent.json"))
         assert result["current_history_id"] is None
         assert result["current_history_name"] is None
 
     def test_save_and_load_session(self, tmp_path):
-        from cli_anything.galaxy.core.session import save_session, load_session
+        from galaxy_cli.core.session import save_session, load_session
 
         sf = str(tmp_path / "session.json")
         save_session({"current_history_id": "h1", "current_history_name": "Test"}, session_path=sf)
@@ -893,7 +893,7 @@ class TestSession:
         assert result["current_history_name"] == "Test"
 
     def test_set_current_history(self, tmp_path):
-        from cli_anything.galaxy.core.session import set_current_history, load_session
+        from galaxy_cli.core.session import set_current_history, load_session
 
         sf = str(tmp_path / "session.json")
         set_current_history("h42", "My History", session_path=sf)
@@ -901,7 +901,7 @@ class TestSession:
         assert result["current_history_id"] == "h42"
 
     def test_track_job(self, tmp_path):
-        from cli_anything.galaxy.core.session import track_job, load_session
+        from galaxy_cli.core.session import track_job, load_session
 
         sf = str(tmp_path / "session.json")
         track_job("j99", session_path=sf)
@@ -909,7 +909,7 @@ class TestSession:
         assert result["last_job_id"] == "j99"
 
     def test_clear_session(self, tmp_path):
-        from cli_anything.galaxy.core.session import save_session, clear_session, load_session
+        from galaxy_cli.core.session import save_session, clear_session, load_session
 
         sf = str(tmp_path / "session.json")
         save_session({"current_history_id": "h1"}, session_path=sf)
@@ -922,7 +922,7 @@ class TestSession:
 
 class TestGalaxyBackend:
     def test_client_no_url(self):
-        from cli_anything.galaxy.utils.galaxy_backend import (
+        from galaxy_cli.utils.galaxy_backend import (
             EXIT_AUTH_ERROR,
             GalaxyClient,
             GalaxyBackendError,
@@ -932,7 +932,7 @@ class TestGalaxyBackend:
             # Remove env vars and ensure no config file
             env = {k: v for k, v in os.environ.items() if k not in ("GALAXY_URL", "GALAXY_API_KEY")}
             with patch.dict(os.environ, env, clear=True):
-                from cli_anything.galaxy.utils import galaxy_backend as gb
+                from galaxy_cli.utils import galaxy_backend as gb
                 with patch.object(gb, "DEFAULT_CONFIG_FILE", Path("/nonexistent/config.json")):
                     with pytest.raises(GalaxyBackendError, match="URL not configured") as exc:
                         GalaxyClient()
@@ -941,7 +941,7 @@ class TestGalaxyBackend:
         assert "GALAXY_URL" in exc.value.suggestion
 
     def test_client_no_key(self):
-        from cli_anything.galaxy.utils.galaxy_backend import (
+        from galaxy_cli.utils.galaxy_backend import (
             EXIT_AUTH_ERROR,
             GalaxyClient,
             GalaxyBackendError,
@@ -950,7 +950,7 @@ class TestGalaxyBackend:
         env = {k: v for k, v in os.environ.items() if k not in ("GALAXY_URL", "GALAXY_API_KEY")}
         env["GALAXY_URL"] = "https://galaxy.example.org"
         with patch.dict(os.environ, env, clear=True):
-            from cli_anything.galaxy.utils import galaxy_backend as gb
+            from galaxy_cli.utils import galaxy_backend as gb
             with patch.object(gb, "DEFAULT_CONFIG_FILE", Path("/nonexistent/config.json")):
                 with pytest.raises(GalaxyBackendError, match="API key not configured") as exc:
                     GalaxyClient()
@@ -959,7 +959,7 @@ class TestGalaxyBackend:
         assert "GALAXY_API_KEY" in exc.value.suggestion
 
     def test_backend_error_to_dict_includes_suggestion(self):
-        from cli_anything.galaxy.utils.galaxy_backend import (
+        from galaxy_cli.utils.galaxy_backend import (
             EXIT_TIMEOUT,
             GalaxyBackendError,
         )
@@ -979,7 +979,7 @@ class TestGalaxyBackend:
         }
 
     def test_client_from_env(self):
-        from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient
+        from galaxy_cli.utils.galaxy_backend import GalaxyClient
 
         env = dict(os.environ)
         env["GALAXY_URL"] = "https://galaxy.example.org"
@@ -990,7 +990,7 @@ class TestGalaxyBackend:
             assert client.api_key == "testkey123"
 
     def test_api_url_construction(self):
-        from cli_anything.galaxy.utils.galaxy_backend import GalaxyClient
+        from galaxy_cli.utils.galaxy_backend import GalaxyClient
 
         env = dict(os.environ)
         env["GALAXY_URL"] = "https://galaxy.example.org"
@@ -1001,7 +1001,7 @@ class TestGalaxyBackend:
             assert client._api_url("/tools") == "https://galaxy.example.org/api/tools"
 
     def test_upload_file_closes_handle_on_request_error(self, tmp_path):
-        from cli_anything.galaxy.utils.galaxy_backend import (
+        from galaxy_cli.utils.galaxy_backend import (
             EXIT_TIMEOUT,
             GalaxyBackendError,
             GalaxyClient,
@@ -1016,7 +1016,7 @@ class TestGalaxyBackend:
             observed["closed_during_request"] = kwargs["files"]["files_0|file_data"][1].closed
             raise requests.Timeout("slow upload")
 
-        with patch("cli_anything.galaxy.utils.galaxy_backend.requests.post", side_effect=fake_post):
+        with patch("galaxy_cli.utils.galaxy_backend.requests.post", side_effect=fake_post):
             with pytest.raises(GalaxyBackendError, match="timed out") as exc:
                 client.upload_file(str(upload_file), "h1")
 

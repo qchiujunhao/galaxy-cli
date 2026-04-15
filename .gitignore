@@ -9,6 +9,9 @@ dist/
 EVAL_PLAN.md
 PAPER_READINESS.md
 v2_shortlist.md
-benchmark/
+benchmark/runs/
+benchmark/workspaces/
+benchmark/__pycache__/
+benchmark/.env
 MANUAL_*.md
 BIOINFORMATICS_*.md
