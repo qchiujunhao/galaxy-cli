@@ -22,6 +22,8 @@ only for the specific command you are about to run.
 - Store large command output in files and extract only needed fields with `jq`.
 - If Galaxy returns `429`, `502`, `503`, `504`, or a server-busy response, sleep
   180 seconds before retrying.
+- If the task already provides exact tool IDs and parameter JSON, submit the
+  tool directly. Do not call `tool show` just to re-discover supplied params.
 
 ## Minimal Command Recipes
 
@@ -59,7 +61,7 @@ cat > tool_inputs.json <<EOF
   "input": "hda:$DATASET_ID"
 }
 EOF
-galaxy-cli --json tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json --wait > tool_result.json
+galaxy-cli --json tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json --wait --timeout 1800 --poll-interval 180 > tool_result.json
 JOB=$(jq -r '.jobs[0].id' tool_result.json)
 ```
 
@@ -94,4 +96,6 @@ galaxy-cli --json dataset download "$DATASET_ID" -o results/output.dat
   `galaxy-cli <group> <command> --help`.
 - For tool parameters, use the task's `workflow/step_specs.json`,
   `workflow/required_step_params.json`, and `workflow/step_execution_hints.json`.
+- Only run `galaxy-cli --json tool show TOOL_ID` when those task files do not
+  provide enough input names/options to build the submission JSON.
 - Do not read package source code. The command help and task files are enough.
