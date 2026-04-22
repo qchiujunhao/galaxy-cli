@@ -565,6 +565,7 @@ def collection_create(ctx, name, history_id, ctype, elements, pairs):
     result = collection_mod.create_collection(
         client, hid, name, collection_type=ctype,
         element_identifiers=element_ids,
+        include_elements=_json_mode_enabled(),
     )
     _output(result, lambda d: click.echo(
         f"Created collection: {d['name']} ({d['id']}) "

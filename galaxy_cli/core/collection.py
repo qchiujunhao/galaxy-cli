@@ -2,7 +2,7 @@
 
 
 def create_collection(client, history_id, name, collection_type="list",
-                      element_identifiers=None):
+                      element_identifiers=None, include_elements=False):
     """Create a dataset collection in a history.
 
     Args:
@@ -22,6 +22,8 @@ def create_collection(client, history_id, name, collection_type="list",
                     {"src": "hda", "id": "...", "name": "forward"},
                     {"src": "hda", "id": "...", "name": "reverse"},
                 ]}]
+        include_elements: If true, fetch and include resolved collection
+            elements in the returned summary.
     """
     payload = {
         "type": "dataset_collection",
@@ -30,7 +32,7 @@ def create_collection(client, history_id, name, collection_type="list",
         "element_identifiers": element_identifiers or [],
     }
     result = client.post(f"histories/{history_id}/contents", json_data=payload)
-    return {
+    created = {
         "id": result.get("id", ""),
         "name": result.get("name", name),
         "collection_type": result.get("collection_type", collection_type),
@@ -38,6 +40,12 @@ def create_collection(client, history_id, name, collection_type="list",
         "history_id": history_id,
         "state": result.get("populated_state", ""),
     }
+    if include_elements and created["id"]:
+        details = show_collection(client, created["id"])
+        created["state"] = details.get("populated_state", created["state"])
+        created["element_count"] = details.get("element_count", created["element_count"])
+        created["elements"] = details.get("elements", [])
+    return created
 
 
 def list_collections(client, history_id, limit=50):

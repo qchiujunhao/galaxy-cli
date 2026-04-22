@@ -398,6 +398,57 @@ class TestCollection:
         assert kwargs["json_data"]["element_identifiers"] == elements
         assert result["id"] == "hdca456"
 
+    def test_create_collection_can_include_resolved_elements(self):
+        from galaxy_cli.core.collection import create_collection
+
+        client = self._mock_client()
+        client.post.return_value = {
+            "id": "hdca456",
+            "name": "pair",
+            "collection_type": "paired",
+            "element_count": 2,
+            "populated_state": "ok",
+        }
+        client.get.return_value = {
+            "id": "hdca456",
+            "name": "pair",
+            "collection_type": "paired",
+            "element_count": 2,
+            "populated_state": "ok",
+            "elements": [
+                {
+                    "element_index": 0,
+                    "element_identifier": "forward",
+                    "element_type": "hda",
+                    "object": {
+                        "id": "fwd123",
+                        "name": "reads_1",
+                        "extension": "fastqsanger.gz",
+                        "state": "ok",
+                    },
+                }
+            ],
+        }
+
+        result = create_collection(
+            client,
+            "hist123",
+            "pair",
+            collection_type="paired",
+            include_elements=True,
+            element_identifiers=[
+                {"src": "hda", "id": "fwd123", "name": "forward"},
+                {"src": "hda", "id": "rev456", "name": "reverse"},
+            ],
+        )
+
+        client.get.assert_called_once_with(
+            "dataset_collections/hdca456",
+            params={"instance_type": "history"},
+        )
+        assert result["elements"][0]["element_identifier"] == "forward"
+        assert result["elements"][0]["id"] == "fwd123"
+
     def test_create_collection_posts_list_paired_payload_with_nested_src(self):
         from galaxy_cli.core.collection import create_collection
 

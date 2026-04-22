@@ -47,6 +47,10 @@ LIST_PAIR=$(galaxy-cli --json collection create "reads" --history-id "$HID" --co
 LIST=$(galaxy-cli --json collection create "reports" --history-id "$HID" --collection-type list -e pair="$DATASET_ID" | jq -r .id)
 ```
 
+`collection create --json` includes resolved element IDs. Save its output if the
+next tool needs a nested collection element; do not call `collection show` unless
+the create output is insufficient.
+
 Run a tool:
 
 ```bash

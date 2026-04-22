@@ -270,3 +270,37 @@ class TestCli:
         assert payload["error"] is True
         assert payload["category"] == "usage_error"
         assert "forward and one reverse element" in payload["message"]
+
+    def test_json_collection_create_requests_resolved_elements(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        created = {
+            "id": "hdca456",
+            "name": "pair",
+            "collection_type": "paired",
+            "element_count": 2,
+            "history_id": "hist-1",
+            "state": "ok",
+            "elements": [{"element_identifier": "forward", "id": "fwd123"}],
+        }
+
+        with patch("galaxy_cli.cli._get_client", return_value=object()), \
+             patch("galaxy_cli.cli._require_history", return_value="hist-1"), \
+             patch("galaxy_cli.cli.collection_mod.create_collection", return_value=created) as create:
+            result = runner.invoke(cli, [
+                "--json",
+                "collection",
+                "create",
+                "pair",
+                "--collection-type",
+                "paired",
+                "-e",
+                "forward=fwd123",
+                "-e",
+                "reverse=rev456",
+            ])
+
+        assert result.exit_code == 0
+        assert json.loads(result.output)["elements"][0]["id"] == "fwd123"
+        assert create.call_args.kwargs["include_elements"] is True
