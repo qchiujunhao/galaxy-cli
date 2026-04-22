@@ -63,13 +63,15 @@ galaxy-cli --json tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inp
 JOB=$(jq -r '.jobs[0].id' tool_result.json)
 ```
 
-Check job and dataset states:
+Check job and output states:
 
 ```bash
-galaxy-cli --json job show "$JOB" --full > job.json
-jq '{id,state,tool_id,outputs:.outputs}' job.json
-galaxy-cli --json dataset show "$DATASET_ID" > dataset.json
+jq '{job:.jobs[0], wait_result, outputs}' tool_result.json
 ```
+
+When `tool run --wait --json` is used, the `outputs` array already includes
+final dataset state/type/size. Do not call `job show --full` or `dataset show`
+for those outputs unless a needed field is missing.
 
 Download outputs only when the task asks for local artifacts:
 

@@ -336,3 +336,38 @@ def run_tool(client, tool_id, history_id, inputs=None):
             for o in outputs
         ],
     }
+
+
+def refresh_output_details(client, history_id, outputs):
+    """Fetch compact state/type details for tool output datasets.
+
+    Tool submission responses often have incomplete output metadata because the
+    datasets are still being created. After a job finishes, this helper lets the
+    CLI return the final state, datatype, and size in the original `tool run`
+    JSON instead of forcing callers to issue one `dataset show` per output.
+    """
+    refreshed = []
+    for output in outputs or []:
+        item = dict(output)
+        dataset_id = item.get("id")
+        if not dataset_id:
+            refreshed.append(item)
+            continue
+        info = client.get(f"histories/{history_id}/contents/{dataset_id}")
+        if not isinstance(info, dict):
+            refreshed.append(item)
+            continue
+        item.update({
+            "id": info.get("id", dataset_id),
+            "name": info.get("name", item.get("name", "")),
+            "state": info.get("state", ""),
+            "extension": info.get("extension", item.get("extension", "")),
+            "file_size": info.get("file_size", 0),
+            "genome_build": info.get("genome_build", "?"),
+            "data_type": info.get("data_type", ""),
+            "visible": info.get("visible", True),
+            "history_content_type": info.get("history_content_type", ""),
+            "misc_blurb": info.get("misc_blurb", ""),
+        })
+        refreshed.append(item)
+    return refreshed

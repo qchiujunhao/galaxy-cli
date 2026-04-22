@@ -849,6 +849,10 @@ def tool_run(ctx, tool_id, history_id, inputs, inputs_json, wait, timeout, poll_
                 client, job_id, max_wait=timeout, poll_interval=poll_interval,
             )
             result["wait_result"] = wait_result
+            if _json_mode_enabled():
+                result["outputs"] = tool_mod.refresh_output_details(
+                    client, hid, result.get("outputs", []),
+                )
     _output(result, lambda d: click.echo(
         f"Tool {d['tool_id']} submitted. "
         f"Jobs: {[j['id'] for j in d['jobs']]}. "

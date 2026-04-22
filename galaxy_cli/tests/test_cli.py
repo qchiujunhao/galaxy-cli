@@ -69,6 +69,9 @@ class TestCli:
         with patch("galaxy_cli.cli._get_client", return_value=object()), \
              patch("galaxy_cli.cli._require_history", return_value="hist-1"), \
              patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result), \
+             patch("galaxy_cli.cli.tool_mod.refresh_output_details", return_value=[
+                 {"name": "trimmed.fastq.gz", "state": "ok", "extension": "fastqsanger.gz"},
+             ]), \
              patch("galaxy_cli.cli.job_mod.wait_for_job", return_value=wait_result), \
              patch("galaxy_cli.cli.session_mod.track_job"):
             result = runner.invoke(
@@ -80,6 +83,7 @@ class TestCli:
         data = json.loads(result.stdout)
         assert data["tool_id"] == "fastp"
         assert data["wait_result"]["state"] == "ok"
+        assert data["outputs"][0]["state"] == "ok"
         assert result.stderr == "Waiting for job job-1...\n"
 
     def test_invocation_wait_keeps_stdout_json_clean(self):

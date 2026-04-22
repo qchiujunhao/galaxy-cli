@@ -685,6 +685,34 @@ class TestTool:
         }
         assert kwargs["json_data"]["inputs"]["adapter"] == "AGATCGGAAGAGC"
 
+    def test_refresh_output_details_fetches_final_dataset_metadata(self):
+        from galaxy_cli.core.tool import refresh_output_details
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "d2",
+            "name": "FastQC Report",
+            "state": "ok",
+            "extension": "html",
+            "file_size": 1234,
+            "genome_build": "?",
+            "data_type": "galaxy.datatypes.text.Html",
+            "visible": True,
+            "history_content_type": "dataset",
+            "misc_blurb": "1.2 KB",
+        }
+
+        result = refresh_output_details(
+            client,
+            "h1",
+            [{"id": "d2", "name": "pending", "extension": ""}],
+        )
+
+        client.get.assert_called_once_with("histories/h1/contents/d2")
+        assert result[0]["state"] == "ok"
+        assert result[0]["extension"] == "html"
+        assert result[0]["file_size"] == 1234
+
 
 # ── Job Tests ────────────────────────────────────────────────────────────
 
