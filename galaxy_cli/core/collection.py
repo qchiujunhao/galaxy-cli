@@ -9,10 +9,15 @@ def create_collection(client, history_id, name, collection_type="list",
         client: GalaxyClient instance.
         history_id: Target history ID.
         name: Collection name.
-        collection_type: "list" or "list:paired".
+        collection_type: "list", "paired", or "list:paired".
         element_identifiers: List of element dicts for the Galaxy API.
             For "list": [{"src": "hda", "id": "...", "name": "..."}]
-            For "list:paired": [{"name": "...", "collection_type": "paired",
+            For "paired": [
+                {"src": "hda", "id": "...", "name": "forward"},
+                {"src": "hda", "id": "...", "name": "reverse"},
+            ]
+            For "list:paired": [{"name": "...", "src": "new_collection",
+                "collection_type": "paired",
                 "element_identifiers": [
                     {"src": "hda", "id": "...", "name": "forward"},
                     {"src": "hda", "id": "...", "name": "reverse"},
@@ -138,6 +143,7 @@ def build_paired_elements(pair_specs):
         pair_name, fwd_id, rev_id = parts
         elements.append({
             "name": pair_name,
+            "src": "new_collection",
             "collection_type": "paired",
             "element_identifiers": [
                 {"src": "hda", "id": fwd_id, "name": "forward"},
@@ -145,3 +151,37 @@ def build_paired_elements(pair_specs):
             ],
         })
     return elements
+
+
+def build_pair_collection_elements(element_specs):
+    """Build element_identifiers for a top-level paired collection.
+
+    Accepts exactly two --element specs. These may be given as:
+        "DATASET_ID"               -> ordered as forward, reverse
+        "forward=DATASET_ID"
+        "reverse=DATASET_ID"
+
+    Returns list of dicts for the Galaxy API.
+    """
+    if len(element_specs) != 2:
+        raise ValueError(
+            "paired collections require exactly two --element/-e arguments.\n"
+            "Format: -e forward=DATASET_ID -e reverse=DATASET_ID"
+        )
+
+    parsed = []
+    for index, spec in enumerate(element_specs):
+        if "=" in spec:
+            name, dataset_id = spec.split("=", 1)
+        else:
+            name = "forward" if index == 0 else "reverse"
+            dataset_id = spec
+        parsed.append({"src": "hda", "id": dataset_id, "name": name})
+
+    names = [item["name"] for item in parsed]
+    if sorted(names) != ["forward", "reverse"]:
+        raise ValueError(
+            "paired collections require one forward and one reverse element.\n"
+            "Format: -e forward=DATASET_ID -e reverse=DATASET_ID"
+        )
+    return sorted(parsed, key=lambda item: 0 if item["name"] == "forward" else 1)

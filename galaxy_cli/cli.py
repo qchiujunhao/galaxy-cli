@@ -74,7 +74,8 @@ def _get_client(ctx):
         return ctx.obj["client"]
     url = ctx.obj.get("url") if ctx.obj else None
     api_key = ctx.obj.get("api_key") if ctx.obj else None
-    return GalaxyClient(url=url, api_key=api_key)
+    profile = ctx.obj.get("profile") if ctx.obj else None
+    return GalaxyClient(url=url, api_key=api_key, profile=profile)
 
 
 def _require_history(ctx):
@@ -97,11 +98,13 @@ def _require_history(ctx):
 @click.group(invoke_without_command=True)
 @click.option("--url", envvar="GALAXY_URL", help="Galaxy server URL")
 @click.option("--api-key", envvar="GALAXY_API_KEY", help="Galaxy API key")
+@click.option("--profile", default=None,
+              help="Use a named profile from ~/.galaxy-cli/config.json for this command")
 @click.option("--history-id", default=None, help="Override current history ID")
 @click.option("--json/--no-json", "json_mode", default=False, help="Output JSON for machine parsing")
 @click.version_option(__version__, prog_name="galaxy-cli")
 @click.pass_context
-def cli(ctx, url, api_key, history_id, json_mode):
+def cli(ctx, url, api_key, profile, history_id, json_mode):
     """CLI harness for Galaxy bioinformatics platform.
 
     Connect to a running Galaxy server and manage histories, datasets,
@@ -126,13 +129,14 @@ def cli(ctx, url, api_key, history_id, json_mode):
     ctx.ensure_object(dict)
     ctx.obj["url"] = url
     ctx.obj["api_key"] = api_key
+    ctx.obj["profile"] = profile
     ctx.obj["history_id"] = history_id
     ctx.obj["json_mode"] = json_mode
     # Lazily create client — only when a subcommand needs it
     ctx.obj["client"] = None
-    if url or api_key:
+    if url or api_key or profile:
         try:
-            ctx.obj["client"] = GalaxyClient(url=url, api_key=api_key)
+            ctx.obj["client"] = GalaxyClient(url=url, api_key=api_key, profile=profile)
         except GalaxyBackendError:
             pass  # Will fail when command actually needs the client
 
@@ -165,9 +169,113 @@ def config_set_key(api_key):
 
 @config_group.command("show")
 def config_show():
-    """Show current configuration."""
+    """Show current configuration (effective url/key + active profile)."""
     result = config_mod.show_config()
-    _output(result, lambda d: click.echo(f"URL: {d['url']}\nAPI Key: {d['api_key']}"))
+    def _human(d):
+        click.echo(f"URL: {d['url']} [{d['url_source']}]")
+        click.echo(f"API Key: {d['api_key']} [{d['api_key_source']}]")
+        if d.get("active_profile"):
+            click.echo(f"Active profile: {d['active_profile']}")
+        if d.get("profiles"):
+            click.echo(f"Profiles: {', '.join(d['profiles'])}")
+    _output(result, _human)
+
+
+# ── Profile Commands ─────────────────────────────────────────────────────
+
+@cli.group("profile")
+def profile_group():
+    """Manage multiple Galaxy server profiles (multi-instance support).
+
+    \b
+    Profiles let you store credentials for several Galaxy servers
+    (e.g., usegalaxy.org, usegalaxy.eu, a local dev server) and switch
+    between them without re-exporting env vars.
+
+    \b
+    Resolution order (first match wins, per field):
+      1. --url / --api-key flags
+      2. GALAXY_URL / GALAXY_API_KEY env vars
+      3. --profile NAME (selected for this command)
+      4. Active profile (set by `profile use`)
+      5. Legacy top-level config
+
+    \b
+    Credentials persist in ~/.galaxy-cli/config.json (mode 0600). No
+    re-auth needed across shell sessions or agent invocations.
+    """
+
+
+@profile_group.command("add")
+@click.argument("name")
+@click.option("--url", required=True, help="Galaxy server URL")
+@click.option("--api-key", required=True, help="Galaxy API key")
+@click.option("--use", is_flag=True, help="Also mark this profile as active")
+def profile_add(name, url, api_key, use):
+    """Create or update a named profile.
+
+    \b
+    Examples:
+      galaxy-cli profile add main --url https://usegalaxy.org --api-key $KEY --use
+      galaxy-cli profile add eu   --url https://usegalaxy.eu  --api-key $KEY
+    """
+    result = config_mod.add_profile(name, url, api_key, use=use)
+    _output(result, lambda d: click.echo(
+        f"Saved profile '{d['name']}' ({d['url']}){'  [active]' if d['active'] else ''}"
+    ))
+
+
+@profile_group.command("list")
+def profile_list():
+    """List all saved profiles."""
+    result = config_mod.list_profiles()
+    def _human(data):
+        if not data:
+            click.echo("No profiles saved. Use: galaxy-cli profile add <name> --url ... --api-key ...")
+            return
+        for p in data:
+            marker = " *" if p["active"] else "  "
+            click.echo(f" {marker} {p['name']:<15} {p['url']}  key={p['api_key']}")
+    _output(result, _human)
+
+
+@profile_group.command("show")
+@click.argument("name", required=False)
+def profile_show(name):
+    """Show a profile (defaults to the active one)."""
+    result = config_mod.show_profile(name)
+    def _human(d):
+        if d.get("error"):
+            click.echo(d["message"], err=True)
+            return
+        click.echo(f"Profile: {d['name']}{'  [active]' if d['active'] else ''}")
+        click.echo(f"  URL: {d['url']}")
+        click.echo(f"  API Key: {d['api_key']}")
+    _output(result, _human)
+    if isinstance(result, dict) and result.get("error"):
+        raise click.exceptions.Exit(EXIT_USER_ERROR)
+
+
+@profile_group.command("use")
+@click.argument("name")
+def profile_use(name):
+    """Set the active profile."""
+    result = config_mod.use_profile(name)
+    if result.get("error"):
+        _output(result, lambda d: click.echo(d["message"], err=True))
+        raise click.exceptions.Exit(EXIT_USER_ERROR)
+    _output(result, lambda d: click.echo(f"Active profile: {d['active_profile']}"))
+
+
+@profile_group.command("remove")
+@click.argument("name")
+def profile_remove(name):
+    """Delete a profile."""
+    result = config_mod.remove_profile(name)
+    if result.get("error"):
+        _output(result, lambda d: click.echo(d["message"], err=True))
+        raise click.exceptions.Exit(EXIT_USER_ERROR)
+    _output(result, lambda d: click.echo(f"Removed profile: {d['name']}"))
 
 
 @config_group.command("test")
@@ -401,7 +509,7 @@ def collection_group():
 @click.argument("name")
 @click.option("--history-id", default=None, help="Target history ID")
 @click.option("--collection-type", "ctype", default="list",
-              type=click.Choice(["list", "list:paired"]),
+              type=click.Choice(["list", "paired", "list:paired"]),
               help="Collection type (default: list)")
 @click.option("--element", "-e", "elements", multiple=True,
               help="List element: DATASET_ID or name=DATASET_ID")
@@ -418,6 +526,7 @@ def collection_create(ctx, name, history_id, ctype, elements, pairs):
     \b
     Examples:
       galaxy-cli --json collection create "samples" --history-id HID -e DSID1 -e DSID2
+      galaxy-cli --json collection create "pair" --history-id HID --collection-type paired -e forward=FWD -e reverse=REV
       galaxy-cli --json collection create "samples" --history-id HID -e s1=DSID1 -e s2=DSID2
       galaxy-cli --json collection create "pairs" --history-id HID --collection-type list:paired -p "sA:FWD:REV"
 
@@ -436,6 +545,13 @@ def collection_create(ctx, name, history_id, ctype, elements, pairs):
                     "Format: -p 'pair_name:forward_id:reverse_id'"
                 )
             element_ids = collection_mod.build_paired_elements(list(pairs))
+        elif ctype == "paired":
+            if not elements:
+                raise click.UsageError(
+                    "paired collections require exactly two --element/-e arguments.\n"
+                    "Format: -e forward=DATASET_ID -e reverse=DATASET_ID"
+                )
+            element_ids = collection_mod.build_pair_collection_elements(list(elements))
         else:
             if not elements:
                 raise click.UsageError(
@@ -1178,6 +1294,7 @@ def repl(ctx):
 
     commands_help = {
         "config":     "Manage server connection (set-url, set-key, show, test)",
+        "profile":    "Manage multiple Galaxy profiles (add, list, show, use, remove)",
         "history":    "Manage histories (list, create, show, delete, use, export)",
         "dataset":    "Manage datasets (list, upload, show, download, peek, delete)",
         "collection": "Manage dataset collections (create, list, show)",

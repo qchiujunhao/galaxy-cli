@@ -336,6 +336,105 @@ class TestDataset:
         assert len(result) == 2
 
 
+# ── Collection Tests ─────────────────────────────────────────────────────
+
+class TestCollection:
+    def _mock_client(self):
+        return MagicMock()
+
+    def test_build_paired_elements_marks_nested_pairs_as_new_collection(self):
+        from galaxy_cli.core.collection import build_paired_elements
+
+        elements = build_paired_elements(["sampleA:fwd123:rev456"])
+
+        assert elements == [
+            {
+                "name": "sampleA",
+                "src": "new_collection",
+                "collection_type": "paired",
+                "element_identifiers": [
+                    {"src": "hda", "id": "fwd123", "name": "forward"},
+                    {"src": "hda", "id": "rev456", "name": "reverse"},
+                ],
+            }
+        ]
+
+    def test_build_pair_collection_elements_accepts_forward_and_reverse(self):
+        from galaxy_cli.core.collection import build_pair_collection_elements
+
+        elements = build_pair_collection_elements(["forward=fwd123", "reverse=rev456"])
+
+        assert elements == [
+            {"src": "hda", "id": "fwd123", "name": "forward"},
+            {"src": "hda", "id": "rev456", "name": "reverse"},
+        ]
+
+    def test_create_collection_posts_paired_payload(self):
+        from galaxy_cli.core.collection import create_collection
+
+        client = self._mock_client()
+        client.post.return_value = {
+            "id": "hdca456",
+            "name": "pair",
+            "collection_type": "paired",
+            "element_count": 2,
+            "populated_state": "ok",
+        }
+        elements = [
+            {"src": "hda", "id": "fwd123", "name": "forward"},
+            {"src": "hda", "id": "rev456", "name": "reverse"},
+        ]
+
+        result = create_collection(
+            client,
+            "hist123",
+            "pair",
+            collection_type="paired",
+            element_identifiers=elements,
+        )
+
+        _, kwargs = client.post.call_args
+        assert kwargs["json_data"]["collection_type"] == "paired"
+        assert kwargs["json_data"]["element_identifiers"] == elements
+        assert result["id"] == "hdca456"
+
+    def test_create_collection_posts_list_paired_payload_with_nested_src(self):
+        from galaxy_cli.core.collection import create_collection
+
+        client = self._mock_client()
+        client.post.return_value = {
+            "id": "hdca123",
+            "name": "pairs",
+            "collection_type": "list:paired",
+            "element_count": 1,
+            "populated_state": "ok",
+        }
+        elements = [
+            {
+                "name": "sampleA",
+                "src": "new_collection",
+                "collection_type": "paired",
+                "element_identifiers": [
+                    {"src": "hda", "id": "fwd123", "name": "forward"},
+                    {"src": "hda", "id": "rev456", "name": "reverse"},
+                ],
+            }
+        ]
+
+        result = create_collection(
+            client,
+            "hist123",
+            "pairs",
+            collection_type="list:paired",
+            element_identifiers=elements,
+        )
+
+        _, kwargs = client.post.call_args
+        assert kwargs["json_data"]["collection_type"] == "list:paired"
+        assert kwargs["json_data"]["element_identifiers"][0]["src"] == "new_collection"
+        assert result["id"] == "hdca123"
+
+
 # ── Tool Tests ───────────────────────────────────────────────────────────
 
 class TestTool:

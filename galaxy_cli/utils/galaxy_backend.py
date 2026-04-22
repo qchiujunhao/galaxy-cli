@@ -56,15 +56,25 @@ class GalaxyBackendError(Exception):
 class GalaxyClient:
     """HTTP client for the Galaxy REST API.
 
-    Authentication priority:
+    Authentication priority (first non-empty wins, per field):
     1. Explicit url/api_key parameters
     2. Environment variables GALAXY_URL / GALAXY_API_KEY
-    3. Config file ~/.galaxy-cli/config.json
+    3. Selected profile (--profile NAME → profiles[NAME])
+    4. Active profile (config["active_profile"] → profiles[active])
+    5. Legacy top-level url / api_key (older config format)
     """
 
-    def __init__(self, url=None, api_key=None, timeout=DEFAULT_TIMEOUT):
-        self.url = url or os.environ.get("GALAXY_URL") or self._load_config_value("url")
-        self.api_key = api_key or os.environ.get("GALAXY_API_KEY") or self._load_config_value("api_key")
+    def __init__(self, url=None, api_key=None, profile=None, timeout=DEFAULT_TIMEOUT):
+        self.url = (
+            url
+            or os.environ.get("GALAXY_URL")
+            or self._load_config_value("url", profile=profile)
+        )
+        self.api_key = (
+            api_key
+            or os.environ.get("GALAXY_API_KEY")
+            or self._load_config_value("api_key", profile=profile)
+        )
         self.timeout = timeout
 
         if not self.url:
@@ -72,44 +82,52 @@ class GalaxyClient:
                 "Galaxy server URL not configured.",
                 category="auth",
                 exit_code=EXIT_AUTH_ERROR,
-                suggestion="export GALAXY_URL=https://usegalaxy.org  or  galaxy-cli config set-url <url>",
+                suggestion="export GALAXY_URL=https://usegalaxy.org  or  galaxy-cli profile add <name> --url <url> --api-key <key>",
             )
         if not self.api_key:
             raise GalaxyBackendError(
                 "Galaxy API key not configured.",
                 category="auth",
                 exit_code=EXIT_AUTH_ERROR,
-                suggestion="export GALAXY_API_KEY=<key>  or  galaxy-cli config set-key <key>",
+                suggestion="export GALAXY_API_KEY=<key>  or  galaxy-cli profile add <name> --url <url> --api-key <key>",
             )
 
         # Normalize URL
         if not self.url.endswith("/"):
             self.url += "/"
 
-    def _load_config_value(self, key):
-        """Load a value from the config file."""
-        if DEFAULT_CONFIG_FILE.exists():
-            try:
-                data = json.loads(DEFAULT_CONFIG_FILE.read_text())
-                return data.get(key)
-            except (json.JSONDecodeError, OSError):
-                pass
-        return None
+    @classmethod
+    def _load_config_value(cls, key, profile=None):
+        """Resolve url/api_key from config, honoring profile selection.
+
+        Lookup order:
+          - if `profile` is given → profiles[profile][key]
+          - else → profiles[active_profile][key]
+          - else → legacy top-level config[key]
+        """
+        data = cls.load_config()
+        if profile:
+            return data.get("profiles", {}).get(profile, {}).get(key)
+        active = data.get("active_profile")
+        if active:
+            val = data.get("profiles", {}).get(active, {}).get(key)
+            if val:
+                return val
+        return data.get(key)
+
+    @staticmethod
+    def _write_config(data):
+        DEFAULT_CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(DEFAULT_CONFIG_DIR, 0o700)
+        DEFAULT_CONFIG_FILE.write_text(json.dumps(data, indent=2))
+        os.chmod(DEFAULT_CONFIG_FILE, stat.S_IRUSR | stat.S_IWUSR)
 
     @staticmethod
     def save_config(key, value):
-        """Save a configuration value to the config file."""
-        DEFAULT_CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(DEFAULT_CONFIG_DIR, 0o700)
-        data = {}
-        if DEFAULT_CONFIG_FILE.exists():
-            try:
-                data = json.loads(DEFAULT_CONFIG_FILE.read_text())
-            except (json.JSONDecodeError, OSError):
-                pass
+        """Save a top-level configuration value (legacy path)."""
+        data = GalaxyClient.load_config()
         data[key] = value
-        DEFAULT_CONFIG_FILE.write_text(json.dumps(data, indent=2))
-        os.chmod(DEFAULT_CONFIG_FILE, stat.S_IRUSR | stat.S_IWUSR)
+        GalaxyClient._write_config(data)
 
     @staticmethod
     def load_config():
@@ -120,6 +138,39 @@ class GalaxyClient:
             except (json.JSONDecodeError, OSError):
                 pass
         return {}
+
+    @staticmethod
+    def save_profile(name, url, api_key, use=False):
+        """Create or update a profile; optionally mark it active."""
+        data = GalaxyClient.load_config()
+        profiles = data.setdefault("profiles", {})
+        profiles[name] = {"url": url.rstrip("/"), "api_key": api_key}
+        if use or "active_profile" not in data:
+            data["active_profile"] = name
+        GalaxyClient._write_config(data)
+        return profiles[name]
+
+    @staticmethod
+    def use_profile(name):
+        """Mark `name` as the active profile. Raises KeyError if missing."""
+        data = GalaxyClient.load_config()
+        if name not in data.get("profiles", {}):
+            raise KeyError(name)
+        data["active_profile"] = name
+        GalaxyClient._write_config(data)
+        return name
+
+    @staticmethod
+    def remove_profile(name):
+        """Delete a profile. Raises KeyError if missing."""
+        data = GalaxyClient.load_config()
+        profiles = data.get("profiles", {})
+        if name not in profiles:
+            raise KeyError(name)
+        del profiles[name]
+        if data.get("active_profile") == name:
+            data.pop("active_profile", None)
+        GalaxyClient._write_config(data)
 
     def _headers(self):
         return {"x-api-key": self.api_key, "Content-Type": "application/json"}
