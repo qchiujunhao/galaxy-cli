@@ -9,6 +9,20 @@ Use this skill when the task requires Galaxy operations through `galaxy-cli`.
 Keep token use low: read this file once, then use `galaxy-cli <command> --help`
 only for the specific command you are about to run.
 
+## Token-Cheap Defaults
+
+`galaxy-cli` is agent-first. The default path is:
+
+1. Submit each tool with `galaxy-cli --json tool run ... --inputs-json FILE`.
+2. Let `tool run` wait. Do not add `--no-wait` unless the task explicitly asks
+   for asynchronous submission.
+3. Use the returned `outputs` array for output IDs, state, datatype, and size.
+4. Do not call `job show`, `dataset show`, `collection show`, `dataset list`,
+   or `collection list` for routine verification.
+5. Do not call `job show --logs` unless debugging a failed job.
+6. Do not call `tool show` when task files already provide exact tool IDs and
+   parameter JSON.
+
 ## Rules
 
 - Use only `galaxy-cli` for Galaxy actions in this condition.
@@ -61,7 +75,7 @@ cat > tool_inputs.json <<EOF
   "input": "hda:$DATASET_ID"
 }
 EOF
-galaxy-cli --json tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json --wait --timeout 1800 --poll-interval 180 > tool_result.json
+galaxy-cli --json tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json > tool_result.json
 JOB=$(jq -r '.jobs[0].id' tool_result.json)
 ```
 
@@ -71,9 +85,9 @@ Check job and output states:
 jq '{job:.jobs[0], wait_result, outputs}' tool_result.json
 ```
 
-When `tool run --wait --json` is used, the `outputs` array already includes
-final dataset state/type/size. Do not call `job show --full` or `dataset show`
-for those outputs unless a needed field is missing.
+`tool run` waits by default. In JSON mode, the `outputs` array includes final
+dataset state/type/size. Do not call `job show --full` or `dataset show` for
+those outputs unless a needed field is missing.
 
 Download outputs only when the task asks for local artifacts:
 

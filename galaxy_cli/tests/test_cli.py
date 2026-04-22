@@ -76,7 +76,7 @@ class TestCli:
              patch("galaxy_cli.cli.session_mod.track_job"):
             result = runner.invoke(
                 cli,
-                ["--json", "tool", "run", "fastp", "--wait"],
+                ["--json", "tool", "run", "fastp"],
             )
 
         assert result.exit_code == 0
@@ -85,6 +85,32 @@ class TestCli:
         assert data["wait_result"]["state"] == "ok"
         assert data["outputs"][0]["state"] == "ok"
         assert result.stderr == "Waiting for job job-1...\n"
+
+    def test_tool_run_no_wait_skips_wait_and_refresh(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        run_result = {
+            "tool_id": "fastp",
+            "jobs": [{"id": "job-1"}],
+            "outputs": [{"name": "trimmed.fastq.gz"}],
+        }
+
+        with patch("galaxy_cli.cli._get_client", return_value=object()), \
+             patch("galaxy_cli.cli._require_history", return_value="hist-1"), \
+             patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result), \
+             patch("galaxy_cli.cli.tool_mod.refresh_output_details") as refresh, \
+             patch("galaxy_cli.cli.job_mod.wait_for_job") as wait, \
+             patch("galaxy_cli.cli.session_mod.track_job"):
+            result = runner.invoke(
+                cli,
+                ["--json", "tool", "run", "fastp", "--no-wait"],
+            )
+
+        assert result.exit_code == 0
+        assert "wait_result" not in json.loads(result.stdout)
+        wait.assert_not_called()
+        refresh.assert_not_called()
 
     def test_invocation_wait_keeps_stdout_json_clean(self):
         from galaxy_cli.cli import cli

@@ -744,6 +744,9 @@ class TestJob:
         result = show_job(client, "j1")
         assert result["state"] == "ok"
         assert result["exit_code"] == 0
+        assert "command_line" not in result
+        assert "stdout" not in result
+        assert "stderr" not in result
 
     def test_show_job_full(self):
         from galaxy_cli.core.job import show_job
@@ -760,6 +763,22 @@ class TestJob:
         result = show_job(client, "j1", full=True)
         assert "inputs" in result
         assert "outputs" in result
+        assert "command_line" not in result
+
+    def test_show_job_logs_are_explicit(self):
+        from galaxy_cli.core.job import show_job
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "j1", "tool_id": "fastqc", "state": "error",
+            "create_time": "", "update_time": "", "exit_code": 1,
+            "history_id": "h1", "command_line": "fastqc input.fastq",
+            "tool_stdout": "Done", "tool_stderr": "Failed",
+        }
+        result = show_job(client, "j1", logs=True)
+        assert result["command_line"] == "fastqc input.fastq"
+        assert result["stdout"] == "Done"
+        assert result["stderr"] == "Failed"
 
     def test_cancel_job(self):
         from galaxy_cli.core.job import cancel_job

@@ -26,8 +26,12 @@ def list_jobs(client, history_id=None, state=None, tool_id=None, limit=50, offse
     ]
 
 
-def show_job(client, job_id, full=False):
-    """Show details of a job."""
+def show_job(client, job_id, full=False, logs=False):
+    """Show details of a job.
+
+    The default response is intentionally compact for agent use. Expensive
+    command lines and logs are included only when `logs` is explicitly true.
+    """
     params = {"full": True} if full else {}
     info = client.get(f"jobs/{job_id}", params=params)
     result = {
@@ -38,14 +42,15 @@ def show_job(client, job_id, full=False):
         "update_time": info.get("update_time", ""),
         "exit_code": info.get("exit_code"),
         "history_id": info.get("history_id", ""),
-        "command_line": info.get("command_line", ""),
-        "stdout": info.get("tool_stdout", ""),
-        "stderr": info.get("tool_stderr", ""),
     }
     if full:
         result["inputs"] = info.get("inputs", {})
         result["outputs"] = info.get("outputs", {})
         result["params"] = info.get("params", {})
+    if logs:
+        result["command_line"] = info.get("command_line", "")
+        result["stdout"] = info.get("tool_stdout", "")
+        result["stderr"] = info.get("tool_stderr", "")
     return result
 
 

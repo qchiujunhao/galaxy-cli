@@ -779,9 +779,13 @@ def tool_show(ctx, tool_id, full):
     help="Path to JSON file with tool inputs. Keys are input names; values may "
     "be nested dicts/lists for repeats and conditionals. -i flags override.",
 )
-@click.option("--wait", is_flag=True, help="Wait for job to complete")
-@click.option("--timeout", default=600, help="Max wait time in seconds (with --wait)")
-@click.option("--poll-interval", default=5, help="Seconds between status checks (with --wait)")
+@click.option(
+    "--wait/--no-wait",
+    default=True,
+    help="Wait for job completion and refresh output metadata. Default: --wait.",
+)
+@click.option("--timeout", default=1800, help="Max wait time in seconds (default: 1800)")
+@click.option("--poll-interval", default=180, help="Seconds between status checks (default: 180)")
 @click.pass_context
 def tool_run(ctx, tool_id, history_id, inputs, inputs_json, wait, timeout, poll_interval):
     """Run a tool with given inputs.
@@ -818,7 +822,12 @@ def tool_run(ctx, tool_id, history_id, inputs, inputs_json, wait, timeout, poll_
         "cond": {"selector": "advanced", "threshold": "0.5"}
       }
 
-    Use `tool show <tool_id>` to discover the input names and types.
+    By default this waits for the job and, in JSON mode, refreshes output
+    state/type/size so agents do not need follow-up job/dataset show calls.
+    Use --no-wait only when you intentionally want asynchronous submission.
+
+    Use `tool show <tool_id>` only when task files do not provide enough input
+    names/options to build the submission JSON.
     """
     client = _get_client(ctx)
     hid = history_id or _require_history(ctx)
@@ -889,12 +898,17 @@ def job_list(ctx, history_id, state, tool_id, limit):
 
 @job_group.command("show")
 @click.argument("job_id")
-@click.option("--full", is_flag=True, help="Show full details including I/O")
+@click.option("--full", is_flag=True, help="Show compact I/O and params")
+@click.option("--logs", is_flag=True, help="Include command line, stdout, and stderr")
 @click.pass_context
-def job_show(ctx, job_id, full):
-    """Show job details."""
+def job_show(ctx, job_id, full, logs):
+    """Show compact job details.
+
+    Default output is token-cheap for agents. Use --logs only when debugging a
+    failed job and the command line/stdout/stderr are required.
+    """
     client = _get_client(ctx)
-    result = job_mod.show_job(client, job_id, full=full)
+    result = job_mod.show_job(client, job_id, full=full, logs=logs)
     def _human(d):
         click.echo(f"Job: {d['id']}")
         click.echo(f"  Tool: {d['tool_id']}")
