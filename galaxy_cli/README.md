@@ -9,7 +9,7 @@ the standalone `galaxy-cli` package.
 
 ## Prerequisites
 
-- **Python 3.10+**
+- **Python 3.9+**
 - **A running Galaxy server** — this CLI connects to Galaxy via its REST API.
   - Public: https://usegalaxy.org, https://usegalaxy.eu, https://usegalaxy.org.au
   - Local: Follow [Galaxy installation docs](https://docs.galaxyproject.org/)
@@ -58,6 +58,10 @@ galaxy-cli config set-key your-api-key
 galaxy-cli config test
 ```
 
+Session state is stored in `~/.galaxy-cli/session.json`. It is intended for a
+single active writer; for parallel automation or multiple concurrent agents,
+pass `--history-id` explicitly instead of relying on shared session state.
+
 ## Usage
 
 ### One-shot commands
@@ -86,12 +90,15 @@ galaxy-cli job show job-id
 galaxy-cli workflow run workflow-id -i 0=dataset-id
 ```
 
-### JSON output (for agents)
+### Machine-readable output
 
 ```bash
-galaxy-cli --json history list
-galaxy-cli --json tool show bowtie2
+galaxy-cli history list | jq .
+galaxy-cli tool show bowtie2 > bowtie2.json
 ```
+
+JSON is automatic when stdout is piped or redirected. Use `--json` to force
+JSON in a terminal, or `--no-json` to force human-readable text.
 
 ### Interactive REPL
 

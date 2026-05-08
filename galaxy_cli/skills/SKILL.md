@@ -13,7 +13,7 @@ only for the specific command you are about to run.
 
 `galaxy-cli` is agent-first. The default path is:
 
-1. Submit each tool with `galaxy-cli --json tool run ... --inputs-json FILE`.
+1. Submit each tool with `galaxy-cli tool run ... --inputs-json FILE`.
 2. Let `tool run` wait. Do not add `--no-wait` unless the task explicitly asks
    for asynchronous submission.
 3. Use the returned `outputs` array for output IDs, state, datatype, and size.
@@ -29,8 +29,12 @@ only for the specific command you are about to run.
 - Do not use BioBlend, raw HTTP clients, MCP tools, or Galaxy source code.
 - Do not inspect or print API keys. Use `GALAXY_URL` and `GALAXY_API_KEY` from
   the environment.
-- Always pass `--json` when machine-readable output is needed.
-- Pass `--history-id` explicitly on every history-scoped command.
+- Machine-readable output is automatic when stdout is piped or redirected. Use
+  `--json` only to force JSON while writing to a terminal, or `--no-json` to
+  force human-readable text.
+- Pass `--history-id` explicitly on every history-scoped command. Do not rely
+  on shared session state when multiple agents or concurrent runs may touch the
+  same machine.
 - Prefer `--inputs-json FILE` for tool runs with conditionals, repeats, or more
   than two parameters.
 - Store large command output in files and extract only needed fields with `jq`.
@@ -38,32 +42,48 @@ only for the specific command you are about to run.
   180 seconds before retrying.
 - If the task already provides exact tool IDs and parameter JSON, submit the
   tool directly. Do not call `tool show` just to re-discover supplied params.
+- Do not download datasets or reports to local files unless the task explicitly
+  asks for a local artifact. Reuse Galaxy dataset ids and collection ids
+  directly in downstream tool runs.
+- For `workflow run`, explicit source prefixes must be `hda:`, `hdca:`, or
+  `ldda:`. Treat any other prefix as invalid input and fix it before submit.
+- `workflow run --wait` should be trusted only when the invocation reaches
+  Galaxy's `scheduled` state and all discovered jobs are terminal; this avoids
+  reporting success while later steps are still being scheduled.
 
 ## Minimal Command Recipes
 
 Create a fresh history:
 
 ```bash
-HID=$(galaxy-cli --json history create "task run" | jq -r .id)
+HID=$(galaxy-cli history create "task run" | jq -r .id)
+echo "$HID" > history_id.txt
+```
+
+Copy a prepared source history into a fresh working history:
+
+```bash
+HID=$(galaxy-cli history copy "$SOURCE_HISTORY_ID" "task run copy" | jq -r .id)
 echo "$HID" > history_id.txt
 ```
 
 Upload local datasets:
 
 ```bash
-FWD=$(galaxy-cli --json dataset upload inputs/reads_1.fastq.gz --history-id "$HID" --file-type fastqsanger.gz | jq -r .id)
-REV=$(galaxy-cli --json dataset upload inputs/reads_2.fastq.gz --history-id "$HID" --file-type fastqsanger.gz | jq -r .id)
+FWD=$(galaxy-cli dataset upload inputs/reads_1.fastq.gz --history-id "$HID" --file-type fastqsanger.gz | jq -r .id)
+REV=$(galaxy-cli dataset upload inputs/reads_2.fastq.gz --history-id "$HID" --file-type fastqsanger.gz | jq -r .id)
 ```
 
 Create collections:
 
 ```bash
-PAIR=$(galaxy-cli --json collection create "pair" --history-id "$HID" --collection-type paired -e forward="$FWD" -e reverse="$REV" | jq -r .id)
-LIST_PAIR=$(galaxy-cli --json collection create "reads" --history-id "$HID" --collection-type list:paired -p "pair:$FWD:$REV" | jq -r .id)
-LIST=$(galaxy-cli --json collection create "reports" --history-id "$HID" --collection-type list -e pair="$DATASET_ID" | jq -r .id)
+PAIR=$(galaxy-cli collection create "pair" --history-id "$HID" --collection-type paired --forward "$FWD" --reverse "$REV" | jq -r .id)
+PAIR_ALT=$(galaxy-cli collection create "pair" --history-id "$HID" --collection-type paired -e forward="$FWD" -e reverse="$REV" | jq -r .id)
+LIST_PAIR=$(galaxy-cli collection create "reads" --history-id "$HID" --collection-type list:paired -p "pair:$FWD:$REV" | jq -r .id)
+LIST=$(galaxy-cli collection create "reports" --history-id "$HID" --collection-type list -e pair="$DATASET_ID" | jq -r .id)
 ```
 
-`collection create --json` includes resolved element IDs. Save its output if the
+`collection create` includes resolved element IDs in JSON mode. Save its output if the
 next tool needs a nested collection element; do not call `collection show` unless
 the create output is insufficient.
 
@@ -75,7 +95,7 @@ cat > tool_inputs.json <<EOF
   "input": "hda:$DATASET_ID"
 }
 EOF
-galaxy-cli --json tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json > tool_result.json
+galaxy-cli tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json > tool_result.json
 JOB=$(jq -r '.jobs[0].id' tool_result.json)
 ```
 
@@ -86,19 +106,21 @@ jq '{job:.jobs[0], wait_result, outputs}' tool_result.json
 ```
 
 `tool run` waits by default. In JSON mode, the `outputs` array includes final
-dataset state/type/size. Do not call `job show --full` or `dataset show` for
-those outputs unless a needed field is missing.
+dataset or dataset-collection state/type/size metadata after wait. Do not call
+`job show --full`, `dataset show`, or `collection show` for those outputs
+unless a needed field is missing.
 
-Download outputs only when the task asks for local artifacts:
+Download outputs only when the task explicitly asks for local artifacts:
 
 ```bash
-galaxy-cli --json dataset download "$DATASET_ID" -o results/output.dat
+galaxy-cli dataset download "$DATASET_ID" results/output.dat
 ```
 
 ## Input Encoding
 
 - Dataset: `hda:DATASET_ID`
 - Dataset collection: `hdca:COLLECTION_ID`
+- Library dataset: `ldda:DATASET_ID`
 - Boolean: `true` or `false`
 - Conditional or repeat params: prefer nested JSON in `--inputs-json`.
 - Flattened conditional paths use pipes when needed, for example
@@ -110,6 +132,6 @@ galaxy-cli --json dataset download "$DATASET_ID" -o results/output.dat
   `galaxy-cli <group> <command> --help`.
 - For tool parameters, use the task's `workflow/step_specs.json`,
   `workflow/required_step_params.json`, and `workflow/step_execution_hints.json`.
-- Only run `galaxy-cli --json tool show TOOL_ID` when those task files do not
+- Only run `galaxy-cli tool show TOOL_ID` when those task files do not
   provide enough input names/options to build the submission JSON.
 - Do not read package source code. The command help and task files are enough.

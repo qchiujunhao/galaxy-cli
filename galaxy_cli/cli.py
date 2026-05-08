@@ -14,7 +14,6 @@ from galaxy_cli import __version__
 from galaxy_cli.utils.galaxy_backend import (
     GalaxyClient,
     GalaxyBackendError,
-    EXIT_OK,
     EXIT_USER_ERROR,
 )
 from galaxy_cli.core import (
@@ -32,14 +31,45 @@ from galaxy_cli.core import (
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
+_ROOT_OPTIONS_WITH_VALUES = {"--url", "--api-key", "--profile", "--history-id"}
+
+def _resolve_json_mode(json_mode):
+    """Resolve tri-state JSON mode to a boolean for the current stdout."""
+    if json_mode is None:
+        return not sys.stdout.isatty()
+    return bool(json_mode)
+
+
+def _json_mode_from_argv(args):
+    """Parse the last explicit root-level JSON mode flag from argv."""
+    json_mode = None
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            break
+        if arg == "--json":
+            json_mode = True
+        elif arg == "--no-json":
+            json_mode = False
+        elif arg in _ROOT_OPTIONS_WITH_VALUES:
+            index += 1
+        elif any(arg.startswith(f"{opt}=") for opt in _ROOT_OPTIONS_WITH_VALUES):
+            pass
+        elif not arg.startswith("-"):
+            break
+        index += 1
+    return json_mode
+
+
 def _json_mode_enabled():
     """Return whether the current Click context should emit JSON."""
     ctx = click.get_current_context(silent=True)
     while ctx is not None:
         if ctx.obj and "json_mode" in ctx.obj:
-            return bool(ctx.obj["json_mode"])
+            return _resolve_json_mode(ctx.obj["json_mode"])
         ctx = ctx.parent
-    return False
+    return _resolve_json_mode(None)
 
 
 def _normalize_repl_args(args, default_json_mode):
@@ -75,7 +105,10 @@ def _get_client(ctx):
     url = ctx.obj.get("url") if ctx.obj else None
     api_key = ctx.obj.get("api_key") if ctx.obj else None
     profile = ctx.obj.get("profile") if ctx.obj else None
-    return GalaxyClient(url=url, api_key=api_key, profile=profile)
+    client = GalaxyClient(url=url, api_key=api_key, profile=profile)
+    if ctx.obj is not None:
+        ctx.obj["client"] = client
+    return client
 
 
 def _require_history(ctx):
@@ -101,7 +134,12 @@ def _require_history(ctx):
 @click.option("--profile", default=None,
               help="Use a named profile from ~/.galaxy-cli/config.json for this command")
 @click.option("--history-id", default=None, help="Override current history ID")
-@click.option("--json/--no-json", "json_mode", default=False, help="Output JSON for machine parsing")
+@click.option(
+    "--json/--no-json",
+    "json_mode",
+    default=None,
+    help="Force JSON output (default when piped) or force human-readable output (default when stdout is a terminal)",
+)
 @click.version_option(__version__, prog_name="galaxy-cli")
 @click.pass_context
 def cli(ctx, url, api_key, profile, history_id, json_mode):
@@ -111,22 +149,30 @@ def cli(ctx, url, api_key, profile, history_id, json_mode):
     tools, workflows, and jobs from the command line.
 
     \b
+    Output mode:
+      JSON is automatic when stdout is piped or redirected.
+      Human-readable text is the default when stdout is a terminal.
+      Use --json or --no-json to override auto-detection.
+
+    \b
     Quick start (typical tool task):
       source .env                      # set GALAXY_URL + GALAXY_API_KEY
-      galaxy-cli --json history create "my run"
-      galaxy-cli --json dataset upload data.tsv --history-id HID
-      galaxy-cli --json tool search "cut columns"
-      galaxy-cli --json tool show Cut1
-      galaxy-cli --json tool run Cut1 --history-id HID -i input=DSID --wait
-      galaxy-cli --json dataset show OUTPUT_ID
+      galaxy-cli history create "my run"
+      galaxy-cli dataset upload data.tsv --history-id HID
+      galaxy-cli tool search "cut columns"
+      galaxy-cli tool show Cut1
+      galaxy-cli tool run Cut1 --history-id HID -i input=DSID --wait
+      galaxy-cli dataset show OUTPUT_ID
 
     \b
     Quick start (workflow task):
-      galaxy-cli --json workflow import workflow.ga
-      galaxy-cli --json workflow show WF_ID
-      galaxy-cli --json workflow run WF_ID --history-id HID -i 0=DSID --wait
+      galaxy-cli workflow import workflow.ga
+      galaxy-cli workflow show WF_ID
+      galaxy-cli workflow run WF_ID --history-id HID -i 0=DSID --wait
     """
     ctx.ensure_object(dict)
+    if json_mode is None:
+        json_mode = not sys.stdout.isatty()
     ctx.obj["url"] = url
     ctx.obj["api_key"] = api_key
     ctx.obj["profile"] = profile
@@ -323,8 +369,8 @@ def history_create(ctx, name):
 
     \b
     Examples:
-      galaxy-cli --json history create "benchmark-T01"
-      galaxy-cli --json history create "RNA-seq analysis"
+      galaxy-cli history create "benchmark-T01"
+      galaxy-cli history create "RNA-seq analysis"
 
     \b
     The returned JSON includes the history ID:
@@ -335,6 +381,31 @@ def history_create(ctx, name):
     result = history_mod.create_history(client, name=name)
     session_mod.set_current_history(result["id"], result["name"])
     _output(result, lambda d: click.echo(f"Created history: {d['name']} ({d['id']})"))
+
+
+@history_group.command("copy")
+@click.argument("history_id")
+@click.argument("name", required=False)
+@click.option("--all-datasets", is_flag=True, help="Also copy deleted datasets and deleted collections")
+@click.pass_context
+def history_copy(ctx, history_id, name, all_datasets):
+    """Copy an existing history and set the copy as the current working history.
+
+    \b
+    Examples:
+      galaxy-cli history copy abc123
+      galaxy-cli history copy abc123 "working copy"
+      galaxy-cli history copy abc123 "working copy" --all-datasets
+    """
+    client = _get_client(ctx)
+    result = history_mod.copy_history(client, history_id, name=name, all_datasets=all_datasets)
+    session_mod.set_current_history(result["id"], result["name"])
+    _output(
+        result,
+        lambda d: click.echo(
+            f"Copied history {d['copied_from_history_id']} to {d['name']} ({d['id']})"
+        ),
+    )
 
 
 @history_group.command("show")
@@ -425,8 +496,8 @@ def dataset_upload(ctx, file_path, history_id, file_type, dbkey):
 
     \b
     Examples:
-      galaxy-cli --json dataset upload data.tabular --history-id HID
-      galaxy-cli --json dataset upload reads.fastq --history-id HID --file-type fastqsanger
+      galaxy-cli dataset upload data.tabular --history-id HID
+      galaxy-cli dataset upload reads.fastq --history-id HID --file-type fastqsanger
 
     \b
     The returned JSON includes the dataset ID:
@@ -511,12 +582,14 @@ def collection_group():
 @click.option("--collection-type", "ctype", default="list",
               type=click.Choice(["list", "paired", "list:paired"]),
               help="Collection type (default: list)")
+@click.option("--forward", default=None, help="Forward dataset ID for paired collections")
+@click.option("--reverse", default=None, help="Reverse dataset ID for paired collections")
 @click.option("--element", "-e", "elements", multiple=True,
               help="List element: DATASET_ID or name=DATASET_ID")
 @click.option("--pair", "-p", "pairs", multiple=True,
               help="Paired element: pair_name:forward_id:reverse_id")
 @click.pass_context
-def collection_create(ctx, name, history_id, ctype, elements, pairs):
+def collection_create(ctx, name, history_id, ctype, forward, reverse, elements, pairs):
     """Create a dataset collection from uploaded datasets.
 
     \b
@@ -525,10 +598,11 @@ def collection_create(ctx, name, history_id, ctype, elements, pairs):
 
     \b
     Examples:
-      galaxy-cli --json collection create "samples" --history-id HID -e DSID1 -e DSID2
-      galaxy-cli --json collection create "pair" --history-id HID --collection-type paired -e forward=FWD -e reverse=REV
-      galaxy-cli --json collection create "samples" --history-id HID -e s1=DSID1 -e s2=DSID2
-      galaxy-cli --json collection create "pairs" --history-id HID --collection-type list:paired -p "sA:FWD:REV"
+      galaxy-cli collection create "samples" --history-id HID -e DSID1 -e DSID2
+      galaxy-cli collection create "pair" --history-id HID --collection-type paired --forward FWD --reverse REV
+      galaxy-cli collection create "pair" --history-id HID --collection-type paired -e forward=FWD -e reverse=REV
+      galaxy-cli collection create "samples" --history-id HID -e s1=DSID1 -e s2=DSID2
+      galaxy-cli collection create "pairs" --history-id HID --collection-type list:paired -p "sA:FWD:REV"
 
     \b
     The returned collection ID can be used as a tool/workflow input:
@@ -538,7 +612,20 @@ def collection_create(ctx, name, history_id, ctype, elements, pairs):
     hid = history_id or _require_history(ctx)
 
     try:
-        if ctype == "list:paired":
+        if ctype == "paired" and forward and reverse and elements:
+            raise click.UsageError(
+                "Use either --forward/--reverse or -e for paired collections, not both"
+            )
+        if ctype == "paired" and forward and reverse:
+            element_ids = [
+                {"name": "forward", "id": forward, "src": "hda"},
+                {"name": "reverse", "id": reverse, "src": "hda"},
+            ]
+        elif ctype == "paired" and (forward or reverse):
+            raise click.UsageError("Paired collections require both --forward and --reverse")
+        elif ctype != "paired" and (forward or reverse):
+            raise click.UsageError("--forward/--reverse only apply to paired collections")
+        elif ctype == "list:paired":
             if not pairs:
                 raise click.UsageError(
                     "list:paired collections require --pair/-p arguments.\n"
@@ -687,9 +774,9 @@ def tool_show(ctx, tool_id, full):
 
     \b
     Examples:
-      galaxy-cli --json tool show Cut1
-      galaxy-cli --json tool show datamash_ops
-      galaxy-cli --json tool show Cut1 --full
+      galaxy-cli tool show Cut1
+      galaxy-cli tool show datamash_ops
+      galaxy-cli tool show Cut1 --full
 
     \b
     Key fields in each input entry:
@@ -858,6 +945,9 @@ def tool_run(ctx, tool_id, history_id, inputs, inputs_json, wait, timeout, poll_
                 client, job_id, max_wait=timeout, poll_interval=poll_interval,
             )
             result["wait_result"] = wait_result
+            for j in result.get("jobs", []):
+                if j["id"] == wait_result.get("id"):
+                    j["state"] = wait_result.get("state", j.get("state"))
             if _json_mode_enabled():
                 result["outputs"] = tool_mod.refresh_output_details(
                     client, hid, result.get("outputs", []),
@@ -1058,9 +1148,9 @@ def workflow_run(ctx, workflow_id, history_id, new_history, inputs, wait, timeou
 
     \b
     Examples:
-      galaxy-cli --json workflow run WF_ID --history-id HID -i 0=DSID --wait
-      galaxy-cli --json workflow run WF_ID --history-id HID -i 0=DSID -i 1=hdca:COLL_ID --wait
-      galaxy-cli --json workflow run WF_ID --new-history "results" -i 0=DSID --wait
+      galaxy-cli workflow run WF_ID --history-id HID -i 0=DSID --wait
+      galaxy-cli workflow run WF_ID --history-id HID -i 0=DSID -i 1=hdca:COLL_ID --wait
+      galaxy-cli workflow run WF_ID --new-history "results" -i 0=DSID --wait
 
     \b
     Input values:
@@ -1372,7 +1462,7 @@ def repl(ctx):
 
 def main():
     """Main entry point."""
-    root_obj = {"json_mode": "--json" in sys.argv[1:] and "--no-json" not in sys.argv[1:]}
+    root_obj = {"json_mode": _resolve_json_mode(_json_mode_from_argv(sys.argv[1:]))}
     try:
         cli.main(args=sys.argv[1:], prog_name="galaxy-cli", obj=root_obj, standalone_mode=False)
     except Exit as exc:

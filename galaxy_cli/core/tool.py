@@ -242,12 +242,12 @@ def _collect_input_types(inputs):
 def _normalize_tool_input(name, value, input_types):
     """Convert CLI key=value strings to Galaxy tool input payloads."""
     input_type = input_types.get(name, "")
-    if isinstance(value, str):
+    if isinstance(value, str) and input_type in {"data", "data_collection"}:
         if ":" in value:
             src, dataset_id = value.split(":", 1)
             if src in {"hda", "hdca", "ldda"} and dataset_id:
                 return {"src": src, "id": dataset_id}
-        if input_type in {"data", "data_collection"} and _GALAXY_ID_RE.match(value):
+        if _GALAXY_ID_RE.match(value):
             src = "hdca" if input_type == "data_collection" else "hda"
             return {"src": src, "id": value}
     return value
@@ -316,6 +316,7 @@ def run_tool(client, tool_id, history_id, inputs=None):
     result = client.post("tools", json_data=payload)
     jobs = result.get("jobs", [])
     outputs = result.get("outputs", [])
+    output_collections = result.get("output_collections", [])
     return {
         "tool_id": tool_id,
         "history_id": history_id,
@@ -332,8 +333,18 @@ def run_tool(client, tool_id, history_id, inputs=None):
                 "id": o.get("id", ""),
                 "name": o.get("name", ""),
                 "extension": o.get("extension", ""),
+                "history_content_type": o.get("history_content_type", "dataset"),
             }
             for o in outputs
+        ] + [
+            {
+                "id": o.get("id", ""),
+                "name": o.get("name", ""),
+                "extension": "",
+                "collection_type": o.get("collection_type", ""),
+                "history_content_type": o.get("history_content_type", "dataset_collection"),
+            }
+            for o in output_collections
         ],
     }
 
@@ -349,16 +360,35 @@ def refresh_output_details(client, history_id, outputs):
     refreshed = []
     for output in outputs or []:
         item = dict(output)
-        dataset_id = item.get("id")
-        if not dataset_id:
+        content_id = item.get("id")
+        if not content_id:
             refreshed.append(item)
             continue
-        info = client.get(f"histories/{history_id}/contents/{dataset_id}")
+        history_content_type = item.get("history_content_type", "dataset")
+        if history_content_type == "dataset_collection":
+            info = client.get(f"histories/{history_id}/contents/dataset_collections/{content_id}")
+            if not isinstance(info, dict):
+                refreshed.append(item)
+                continue
+            item.update({
+                "id": info.get("id", content_id),
+                "name": info.get("name", item.get("name", "")),
+                "state": info.get("populated_state", info.get("state", "")),
+                "history_content_type": info.get("history_content_type", history_content_type),
+                "collection_type": info.get("collection_type", item.get("collection_type", "")),
+                "element_count": info.get("element_count", 0),
+                "populated": info.get("populated", False),
+                "elements_datatypes": info.get("elements_datatypes", []),
+            })
+            refreshed.append(item)
+            continue
+
+        info = client.get(f"histories/{history_id}/contents/{content_id}")
         if not isinstance(info, dict):
             refreshed.append(item)
             continue
         item.update({
-            "id": info.get("id", dataset_id),
+            "id": info.get("id", content_id),
             "name": info.get("name", item.get("name", "")),
             "state": info.get("state", ""),
             "extension": info.get("extension", item.get("extension", "")),

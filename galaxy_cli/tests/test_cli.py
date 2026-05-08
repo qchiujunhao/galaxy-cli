@@ -3,6 +3,7 @@
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -38,7 +39,7 @@ class TestCli:
 
         with patch("galaxy_cli.cli.config_mod.show_config", return_value=config):
             json_result = runner.invoke(cli, ["--json", "config", "show"])
-            text_result = runner.invoke(cli, ["config", "show"])
+            text_result = runner.invoke(cli, ["--no-json", "config", "show"])
 
         assert json_result.exit_code == 0
         data = json.loads(json_result.output)
@@ -48,12 +49,122 @@ class TestCli:
         assert "URL: https://galaxy.example.org" in text_result.output
         assert "API Key: ***...6789" in text_result.output
 
+    def test_json_flag_forces_json_output(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        config = {
+            "url": "https://galaxy.example.org",
+            "url_source": "env",
+            "api_key": "***...6789",
+            "api_key_source": "env",
+            "active_profile": None,
+            "profiles": [],
+        }
+
+        with patch("galaxy_cli.cli.config_mod.show_config", return_value=config):
+            result = runner.invoke(cli, ["--json", "config", "show"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["url"] == "https://galaxy.example.org"
+        assert data["api_key"] == "***...6789"
+
+    def test_no_json_flag_forces_human_output(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        config = {
+            "url": "https://galaxy.example.org",
+            "url_source": "env",
+            "api_key": "***...6789",
+            "api_key_source": "env",
+            "active_profile": None,
+            "profiles": [],
+        }
+
+        with patch("galaxy_cli.cli.config_mod.show_config", return_value=config):
+            result = runner.invoke(cli, ["--no-json", "config", "show"])
+
+        assert result.exit_code == 0
+        assert "URL: https://galaxy.example.org" in result.output
+        assert "API Key: ***...6789" in result.output
+
+    def test_auto_json_output_when_stdout_is_not_a_tty(self):
+        from galaxy_cli.cli import main
+
+        config = {
+            "url": "https://galaxy.example.org",
+            "url_source": "env",
+            "api_key": "***...6789",
+            "api_key_source": "env",
+            "active_profile": None,
+            "profiles": [],
+        }
+
+        with patch.object(sys, "argv", ["galaxy-cli", "config", "show"]), \
+             patch("galaxy_cli.cli.config_mod.show_config", return_value=config), \
+             patch("galaxy_cli.cli.sys.stdout.isatty", return_value=False), \
+             patch("click.echo") as mock_echo:
+            main()
+
+        assert mock_echo.call_count == 1
+        payload = json.loads(mock_echo.call_args.args[0])
+        assert payload["url"] == "https://galaxy.example.org"
+        assert payload["api_key"] == "***...6789"
+
+    def test_auto_text_output_when_stdout_is_a_tty(self):
+        from galaxy_cli.cli import main
+
+        config = {
+            "url": "https://galaxy.example.org",
+            "url_source": "env",
+            "api_key": "***...6789",
+            "api_key_source": "env",
+            "active_profile": None,
+            "profiles": [],
+        }
+
+        with patch.object(sys, "argv", ["galaxy-cli", "config", "show"]), \
+             patch("galaxy_cli.cli.config_mod.show_config", return_value=config), \
+             patch("galaxy_cli.cli.sys.stdout.isatty", return_value=True), \
+             patch("click.echo") as mock_echo:
+            main()
+
+        output_lines = [call.args[0] for call in mock_echo.call_args_list]
+        assert output_lines == [
+            "URL: https://galaxy.example.org [env]",
+            "API Key: ***...6789 [env]",
+        ]
+
     def test_repl_args_allow_overriding_default_json_mode(self):
         from galaxy_cli.cli import _normalize_repl_args
 
         assert _normalize_repl_args(["history", "list"], True) == ["--json", "history", "list"]
         assert _normalize_repl_args(["--no-json", "history", "list"], True) == ["--no-json", "history", "list"]
         assert _normalize_repl_args(["--json", "history", "list"], False) == ["--json", "history", "list"]
+
+    def test_json_mode_from_argv_only_considers_root_flags(self):
+        from galaxy_cli.cli import _json_mode_from_argv
+
+        assert _json_mode_from_argv(["--json", "tool", "show", "fastqc"]) is True
+        assert _json_mode_from_argv(["--profile", "main", "--no-json", "tool", "show", "fastqc"]) is False
+        assert _json_mode_from_argv(["tool", "show", "--json", "fastqc"]) is None
+        assert _json_mode_from_argv(["tool", "run", "cutadapt", "-i", "adapter=--json"]) is None
+
+    def test_get_client_caches_lazy_client_on_context(self):
+        from galaxy_cli.cli import _get_client
+
+        ctx = SimpleNamespace(obj={"url": "https://galaxy.example.org", "api_key": "abc123", "profile": None})
+
+        with patch("galaxy_cli.cli.GalaxyClient", side_effect=["client-1", "client-2"]) as client_cls:
+            first = _get_client(ctx)
+            second = _get_client(ctx)
+
+        assert first == "client-1"
+        assert second == "client-1"
+        assert ctx.obj["client"] == "client-1"
+        client_cls.assert_called_once_with(url="https://galaxy.example.org", api_key="abc123", profile=None)
 
     def test_tool_run_wait_keeps_stdout_json_clean(self):
         from galaxy_cli.cli import cli
@@ -82,6 +193,7 @@ class TestCli:
         assert result.exit_code == 0
         data = json.loads(result.stdout)
         assert data["tool_id"] == "fastp"
+        assert data["jobs"][0]["state"] == "ok"
         assert data["wait_result"]["state"] == "ok"
         assert data["outputs"][0]["state"] == "ok"
         assert result.stderr == "Waiting for job job-1...\n"
@@ -334,3 +446,97 @@ class TestCli:
         assert result.exit_code == 0
         assert json.loads(result.output)["elements"][0]["id"] == "fwd123"
         assert create.call_args.kwargs["include_elements"] is True
+
+    def test_collection_create_accepts_forward_reverse_flags(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        created = {
+            "id": "hdca456",
+            "name": "pair",
+            "collection_type": "paired",
+            "element_count": 2,
+            "history_id": "hist-1",
+            "state": "ok",
+        }
+
+        with patch("galaxy_cli.cli._get_client", return_value=object()), \
+             patch("galaxy_cli.cli._require_history", return_value="hist-1"), \
+             patch("galaxy_cli.cli.collection_mod.create_collection", return_value=created) as create:
+            result = runner.invoke(cli, [
+                "--json",
+                "collection",
+                "create",
+                "pair",
+                "--collection-type",
+                "paired",
+                "--forward",
+                "fwd123",
+                "--reverse",
+                "rev456",
+            ])
+
+        assert result.exit_code == 0
+        assert create.call_args.kwargs["element_identifiers"] == [
+            {"name": "forward", "id": "fwd123", "src": "hda"},
+            {"name": "reverse", "id": "rev456", "src": "hda"},
+        ]
+
+    def test_collection_create_rejects_mixing_forward_reverse_with_elements(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "collection",
+            "create",
+            "pair",
+            "--collection-type",
+            "paired",
+            "--forward",
+            "fwd123",
+            "--reverse",
+            "rev456",
+            "-e",
+            "forward=fwd123",
+            "-e",
+            "reverse=rev456",
+        ])
+
+        assert result.exit_code != 0
+        assert "Use either --forward/--reverse or -e for paired collections, not both" in result.output
+
+    def test_collection_create_rejects_incomplete_forward_reverse_flags(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "collection",
+            "create",
+            "pair",
+            "--collection-type",
+            "paired",
+            "--forward",
+            "fwd123",
+        ])
+
+        assert result.exit_code != 0
+        assert "Paired collections require both --forward and --reverse" in result.output
+
+    def test_collection_create_rejects_forward_reverse_for_non_paired(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "collection",
+            "create",
+            "samples",
+            "--collection-type",
+            "list",
+            "--forward",
+            "fwd123",
+            "--reverse",
+            "rev456",
+        ])
+
+        assert result.exit_code != 0
+        assert "--forward/--reverse only apply to paired collections" in result.output

@@ -4,8 +4,13 @@ import json
 import re
 from pathlib import Path
 
+from galaxy_cli.utils.galaxy_backend import (
+    EXIT_USER_ERROR,
+    GalaxyBackendError,
+)
 
 _GALAXY_ID_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+_WORKFLOW_INPUT_SRCS = {"hda", "hdca", "ldda"}
 
 
 def list_workflows(client, published=False):
@@ -145,8 +150,15 @@ def run_workflow(client, workflow_id, history_id=None, inputs=None, params=None,
                 ds_map[str(step_key)] = dataset_ref
             elif isinstance(dataset_ref, str) and ":" in dataset_ref:
                 src, dataset_id = dataset_ref.split(":", 1)
-                if src in {"hda", "hdca", "ldda"} and dataset_id:
+                if src in _WORKFLOW_INPUT_SRCS and dataset_id:
                     ds_map[str(step_key)] = {"src": src, "id": dataset_id}
+                elif dataset_id:
+                    raise GalaxyBackendError(
+                        f"Unsupported dataset source prefix '{src}' for workflow input '{step_key}'.",
+                        category="invalid_request",
+                        exit_code=EXIT_USER_ERROR,
+                        suggestion="Use hda:, hdca:, or ldda: prefixes for explicit workflow inputs.",
+                    )
                 else:
                     ds_map[str(step_key)] = {"src": "hda", "id": dataset_ref}
             elif isinstance(dataset_ref, str) and _GALAXY_ID_RE.match(dataset_ref):

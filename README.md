@@ -9,7 +9,7 @@ the standalone `galaxy-cli` package.
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.9+
 - A running Galaxy server
 - A Galaxy API key from your target instance
 
@@ -49,14 +49,23 @@ export GALAXY_API_KEY=your-api-key
 galaxy-cli config test
 ```
 
+Session state is stored in `~/.galaxy-cli/session.json`. It is intended for a
+single active writer; for parallel automation or multiple concurrent agents,
+pass `--history-id` explicitly instead of relying on shared session state.
+
 ## Usage
 
 ```bash
 galaxy-cli history list
 galaxy-cli history create "My Analysis"
 galaxy-cli tool search "bowtie"
-galaxy-cli --json workflow list
+galaxy-cli workflow list
+galaxy-cli workflow list | jq .
 ```
+
+`galaxy-cli` emits human-readable text when stdout is a terminal and JSON when
+stdout is piped or redirected. Use `--json` to force JSON in a terminal, or
+`--no-json` to force text output.
 
 Run the REPL:
 

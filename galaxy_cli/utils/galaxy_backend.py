@@ -195,7 +195,7 @@ class GalaxyClient:
                 f"TLS/SSL handshake failed while connecting to Galaxy at {self.url}",
                 category="connection",
                 exit_code=EXIT_SERVER_ERROR,
-                suggestion="Use a modern Python build (uv-managed or Homebrew Python 3.10+).",
+                suggestion="Use a modern Python build (uv-managed or Homebrew Python 3.9+).",
             ) from exc
         except requests.ConnectionError as exc:
             raise GalaxyBackendError(
@@ -219,8 +219,11 @@ class GalaxyClient:
         except requests.HTTPError as exc:
             try:
                 detail = resp.json()
-                msg = detail.get("err_msg") or detail.get("detail") or str(detail)
-            except (ValueError, KeyError):
+                if isinstance(detail, dict):
+                    msg = detail.get("err_msg") or detail.get("detail") or str(detail)
+                else:
+                    msg = str(detail)
+            except ValueError:
                 msg = resp.text[:500]
 
             status = resp.status_code
@@ -331,8 +334,8 @@ class GalaxyClient:
                 "file_type": file_type,
                 "dbkey": dbkey,
                 "files_0|type": "upload_dataset",
-                "files_0|space_to_tab": None,
-                "files_0|to_posix_lines": "Yes",
+                "files_0|space_to_tab": "No",
+                "files_0|to_posix_lines": "No",
             }),
         }
         upload_timeout = max(self.timeout, 300)
@@ -351,7 +354,7 @@ class GalaxyClient:
                     f"TLS/SSL handshake failed during upload to {self.url}",
                     category="connection",
                     exit_code=EXIT_SERVER_ERROR,
-                    suggestion="Use a modern Python build (uv-managed or Homebrew Python 3.10+).",
+                    suggestion="Use a modern Python build (uv-managed or Homebrew Python 3.9+).",
                 ) from exc
             except requests.ConnectionError as exc:
                 raise GalaxyBackendError(

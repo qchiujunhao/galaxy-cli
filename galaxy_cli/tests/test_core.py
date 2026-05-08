@@ -164,6 +164,30 @@ class TestHistory:
         assert result["id"] == "h1"
         assert result["annotation"] == "test annotation"
 
+    def test_copy_history(self):
+        from galaxy_cli.core.history import copy_history
+
+        client = self._mock_client()
+        client.post.return_value = {
+            "id": "h_copy",
+            "name": "Copied History",
+            "state": "new",
+            "create_time": "2024-01-03",
+        }
+        result = copy_history(client, "h1", name="Copied History", all_datasets=True)
+        assert result["id"] == "h_copy"
+        assert result["copied_from_history_id"] == "h1"
+        assert result["all_datasets"] is True
+        client.post.assert_called_once_with(
+            "histories",
+            json_data={
+                "source": "history",
+                "history_id": "h1",
+                "name": "Copied History",
+                "all_datasets": True,
+            },
+        )
+
     def test_show_history_with_contents(self):
         from galaxy_cli.core.history import show_history
 
@@ -609,6 +633,35 @@ class TestTool:
         assert result["jobs"][0]["id"] == "j1"
         assert len(result["outputs"]) == 1
 
+    def test_run_tool_includes_collection_outputs(self):
+        from galaxy_cli.core.tool import run_tool
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "collection_tool",
+            "name": "Collection Tool",
+            "version": "1.0",
+            "description": "",
+            "inputs": [],
+            "outputs": [],
+        }
+        client.post.return_value = {
+            "jobs": [{"id": "j1", "state": "new", "tool_id": "collection_tool"}],
+            "outputs": [],
+            "output_collections": [{"id": "c1", "name": "paired reads", "collection_type": "paired"}],
+        }
+
+        result = run_tool(client, "collection_tool", "h1")
+        assert result["outputs"] == [
+            {
+                "id": "c1",
+                "name": "paired reads",
+                "extension": "",
+                "collection_type": "paired",
+                "history_content_type": "dataset_collection",
+            }
+        ]
+
     def test_run_tool_wraps_dataset_input(self):
         from galaxy_cli.core.tool import run_tool
 
@@ -685,6 +738,25 @@ class TestTool:
         }
         assert kwargs["json_data"]["inputs"]["adapter"] == "AGATCGGAAGAGC"
 
+    def test_run_tool_keeps_prefixed_text_inputs_literal(self):
+        from galaxy_cli.core.tool import run_tool
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "cutadapt",
+            "name": "Cutadapt",
+            "version": "5.2",
+            "description": "",
+            "inputs": [{"name": "adapter", "label": "Adapter", "type": "text", "value": "", "optional": False, "help": ""}],
+            "outputs": [],
+        }
+        client.post.return_value = {"jobs": [], "outputs": []}
+
+        run_tool(client, "cutadapt", "h1", inputs={"adapter": "hda:not-a-dataset"})
+
+        _, kwargs = client.post.call_args
+        assert kwargs["json_data"]["inputs"]["adapter"] == "hda:not-a-dataset"
+
     def test_refresh_output_details_fetches_final_dataset_metadata(self):
         from galaxy_cli.core.tool import refresh_output_details
 
@@ -712,6 +784,32 @@ class TestTool:
         assert result[0]["state"] == "ok"
         assert result[0]["extension"] == "html"
         assert result[0]["file_size"] == 1234
+
+    def test_refresh_output_details_fetches_collection_metadata(self):
+        from galaxy_cli.core.tool import refresh_output_details
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "c1",
+            "name": "paired reads",
+            "populated_state": "ok",
+            "history_content_type": "dataset_collection",
+            "collection_type": "paired",
+            "element_count": 2,
+            "populated": True,
+            "elements_datatypes": ["fastqsanger"],
+        }
+
+        result = refresh_output_details(
+            client,
+            "h1",
+            [{"id": "c1", "name": "pending", "history_content_type": "dataset_collection"}],
+        )
+
+        client.get.assert_called_once_with("histories/h1/contents/dataset_collections/c1")
+        assert result[0]["state"] == "ok"
+        assert result[0]["collection_type"] == "paired"
+        assert result[0]["element_count"] == 2
 
 
 # ── Job Tests ────────────────────────────────────────────────────────────
@@ -890,6 +988,19 @@ class TestWorkflow:
             "id": "f9cad7b01a4721358dba0ff950c535fa",
         }
 
+    def test_run_workflow_rejects_unknown_explicit_source_prefix(self):
+        from galaxy_cli.core.workflow import run_workflow
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+        client = self._mock_client()
+
+        with pytest.raises(GalaxyBackendError) as exc:
+            run_workflow(client, "w1", history_id="h1", inputs={"0": "foo:abc123"})
+
+        assert exc.value.category == "invalid_request"
+        assert "Unsupported dataset source prefix 'foo'" in str(exc.value)
+        client.post.assert_not_called()
+
     def test_delete_workflow(self):
         from galaxy_cli.core.workflow import delete_workflow
 
@@ -984,6 +1095,38 @@ class TestInvocation:
         assert result["invocation_state"] == "scheduled"
         assert result["waited_seconds"] == 1
         assert result["jobs"][0]["id"] == "j1"
+
+    def test_wait_for_invocation_does_not_return_ok_before_scheduling_finishes(self):
+        from galaxy_cli.core.invocation import wait_for_invocation
+
+        client = self._mock_client()
+        client.get.side_effect = [
+            {
+                "id": "inv1",
+                "state": "new",
+                "steps": [
+                    {"id": "s1", "order_index": 0, "state": "ok", "job_id": "j1"},
+                    {"id": "s2", "order_index": 1, "state": "new", "job_id": None},
+                ],
+            },
+            {"id": "j1", "state": "ok", "exit_code": 0},
+            {
+                "id": "inv1",
+                "state": "scheduled",
+                "steps": [
+                    {"id": "s1", "order_index": 0, "state": "ok", "job_id": "j1"},
+                    {"id": "s2", "order_index": 1, "state": "ok", "job_id": None},
+                ],
+            },
+            {"id": "j1", "state": "ok", "exit_code": 0},
+        ]
+
+        with patch("galaxy_cli.core.invocation.time.sleep"):
+            result = wait_for_invocation(client, "inv1", max_wait=2, poll_interval=1)
+
+        assert result["state"] == "ok"
+        assert result["invocation_state"] == "scheduled"
+        assert result["waited_seconds"] == 1
 
     def test_wait_for_invocation_returns_on_failed_job(self):
         from galaxy_cli.core.invocation import wait_for_invocation
@@ -1196,6 +1339,44 @@ class TestGalaxyBackend:
             client = GalaxyClient()
             assert client._api_url("histories") == "https://galaxy.example.org/api/histories"
             assert client._api_url("/tools") == "https://galaxy.example.org/api/tools"
+
+    def test_handle_response_accepts_non_dict_json_error_bodies(self):
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError, GalaxyClient
+
+        client = GalaxyClient(url="https://galaxy.example.org", api_key="testkey123")
+        resp = MagicMock()
+        resp.raise_for_status.side_effect = requests.HTTPError("bad request")
+        resp.json.return_value = ["invalid", "request"]
+        resp.status_code = 400
+        resp.text = '["invalid","request"]'
+
+        with pytest.raises(GalaxyBackendError) as exc:
+            client._handle_response(resp)
+
+        assert exc.value.category == "invalid_request"
+        assert "['invalid', 'request']" in str(exc.value)
+
+    def test_upload_file_disables_text_transforms(self, tmp_path):
+        from galaxy_cli.utils.galaxy_backend import GalaxyClient
+
+        upload_file = tmp_path / "reads.fastq"
+        upload_file.write_text("@r1\nACGT\n+\n!!!!\n")
+        client = GalaxyClient(url="https://galaxy.example.org", api_key="testkey123")
+        observed = {}
+
+        def fake_post(*args, **kwargs):
+            observed["inputs"] = json.loads(kwargs["data"]["inputs"])
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.status_code = 200
+            resp.json.return_value = {"outputs": []}
+            return resp
+
+        with patch("galaxy_cli.utils.galaxy_backend.requests.post", side_effect=fake_post):
+            client.upload_file(str(upload_file), "h1")
+
+        assert observed["inputs"]["files_0|space_to_tab"] == "No"
+        assert observed["inputs"]["files_0|to_posix_lines"] == "No"
 
     def test_upload_file_closes_handle_on_request_error(self, tmp_path):
         from galaxy_cli.utils.galaxy_backend import (

@@ -1,4 +1,4 @@
-"""History management — create, list, show, delete, export Galaxy histories."""
+"""History management — create, copy, list, show, delete, export Galaxy histories."""
 
 
 def list_histories(client, deleted=False, limit=50, offset=0):
@@ -29,6 +29,24 @@ def create_history(client, name="Unnamed history"):
         "name": result.get("name", name),
         "state": result.get("state", ""),
         "create_time": result.get("create_time", ""),
+    }
+
+
+def copy_history(client, history_id, name=None, all_datasets=False):
+    """Create a new history by copying an existing one."""
+    payload = {"source": "history", "history_id": history_id}
+    if name is not None:
+        payload["name"] = name
+    if all_datasets:
+        payload["all_datasets"] = True
+    result = client.post("histories", json_data=payload)
+    return {
+        "id": result["id"],
+        "name": result.get("name", name or ""),
+        "state": result.get("state", ""),
+        "create_time": result.get("create_time", ""),
+        "copied_from_history_id": history_id,
+        "all_datasets": bool(all_datasets),
     }
 
 
