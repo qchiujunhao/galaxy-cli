@@ -29,9 +29,8 @@ only for the specific command you are about to run.
 - Do not use BioBlend, raw HTTP clients, MCP tools, or Galaxy source code.
 - Do not inspect or print API keys. Use `GALAXY_URL` and `GALAXY_API_KEY` from
   the environment.
-- Machine-readable output is automatic when stdout is piped or redirected. Use
-  `--json` only to force JSON while writing to a terminal, or `--no-json` to
-  force human-readable text.
+- Compact JSON output is the default. Use `--human` only when a task needs
+  human-readable terminal output.
 - Pass `--history-id` explicitly on every history-scoped command. Do not rely
   on shared session state when multiple agents or concurrent runs may touch the
   same machine.

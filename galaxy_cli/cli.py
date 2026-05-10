@@ -34,9 +34,9 @@ from galaxy_cli.core import (
 _ROOT_OPTIONS_WITH_VALUES = {"--url", "--api-key", "--profile", "--history-id"}
 
 def _resolve_json_mode(json_mode):
-    """Resolve tri-state JSON mode to a boolean for the current stdout."""
+    """Resolve tri-state JSON mode to a boolean."""
     if json_mode is None:
-        return not sys.stdout.isatty()
+        return True
     return bool(json_mode)
 
 
@@ -50,7 +50,7 @@ def _json_mode_from_argv(args):
             break
         if arg == "--json":
             json_mode = True
-        elif arg == "--no-json":
+        elif arg == "--human":
             json_mode = False
         elif arg in _ROOT_OPTIONS_WITH_VALUES:
             index += 1
@@ -74,8 +74,8 @@ def _json_mode_enabled():
 
 def _normalize_repl_args(args, default_json_mode):
     """Apply REPL default JSON mode unless the command overrides it."""
-    if default_json_mode and "--json" not in args and "--no-json" not in args:
-        return ["--json"] + args
+    if not default_json_mode and "--json" not in args and "--human" not in args:
+        return ["--human"] + args
     return args
 
 
@@ -135,10 +135,10 @@ def _require_history(ctx):
               help="Use a named profile from ~/.galaxy-cli/config.json for this command")
 @click.option("--history-id", default=None, help="Override current history ID")
 @click.option(
-    "--json/--no-json",
+    "--json/--human",
     "json_mode",
     default=None,
-    help="Force JSON output (default when piped) or force human-readable output (default when stdout is a terminal)",
+    help="JSON output (default) or human-readable output",
 )
 @click.version_option(__version__, prog_name="galaxy-cli")
 @click.pass_context
@@ -150,9 +150,8 @@ def cli(ctx, url, api_key, profile, history_id, json_mode):
 
     \b
     Output mode:
-      JSON is automatic when stdout is piped or redirected.
-      Human-readable text is the default when stdout is a terminal.
-      Use --json or --no-json to override auto-detection.
+      Compact JSON is the default.
+      Use --human for human-readable terminal output.
 
     \b
     Quick start (typical tool task):
@@ -171,8 +170,7 @@ def cli(ctx, url, api_key, profile, history_id, json_mode):
       galaxy-cli workflow run WF_ID --history-id HID -i 0=DSID --wait
     """
     ctx.ensure_object(dict)
-    if json_mode is None:
-        json_mode = not sys.stdout.isatty()
+    json_mode = _resolve_json_mode(json_mode)
     ctx.obj["url"] = url
     ctx.obj["api_key"] = api_key
     ctx.obj["profile"] = profile

@@ -97,8 +97,14 @@ galaxy-cli history list | jq .
 galaxy-cli tool show bowtie2 > bowtie2.json
 ```
 
-JSON is automatic when stdout is piped or redirected. Use `--json` to force
-JSON in a terminal, or `--no-json` to force human-readable text.
+Compact JSON is the default. Use `--human` for human-readable terminal output.
+
+### Human-readable output
+
+```bash
+galaxy-cli --human config show
+galaxy-cli --human history list
+```
 
 ### Interactive REPL
 

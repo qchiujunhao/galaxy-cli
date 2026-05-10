@@ -61,11 +61,11 @@ galaxy-cli history create "My Analysis"
 galaxy-cli tool search "bowtie"
 galaxy-cli workflow list
 galaxy-cli workflow list | jq .
+galaxy-cli --human config show
 ```
 
-`galaxy-cli` emits human-readable text when stdout is a terminal and JSON when
-stdout is piped or redirected. Use `--json` to force JSON in a terminal, or
-`--no-json` to force text output.
+`galaxy-cli` defaults to compact JSON output. Use `--human` for
+human-readable terminal output.
 
 Run the REPL:
 

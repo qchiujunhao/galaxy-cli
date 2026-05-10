@@ -39,7 +39,7 @@ class TestCli:
 
         with patch("galaxy_cli.cli.config_mod.show_config", return_value=config):
             json_result = runner.invoke(cli, ["--json", "config", "show"])
-            text_result = runner.invoke(cli, ["--no-json", "config", "show"])
+            text_result = runner.invoke(cli, ["--human", "config", "show"])
 
         assert json_result.exit_code == 0
         data = json.loads(json_result.output)
@@ -70,7 +70,7 @@ class TestCli:
         assert data["url"] == "https://galaxy.example.org"
         assert data["api_key"] == "***...6789"
 
-    def test_no_json_flag_forces_human_output(self):
+    def test_human_flag_forces_human_output(self):
         from galaxy_cli.cli import cli
 
         runner = CliRunner()
@@ -84,15 +84,16 @@ class TestCli:
         }
 
         with patch("galaxy_cli.cli.config_mod.show_config", return_value=config):
-            result = runner.invoke(cli, ["--no-json", "config", "show"])
+            result = runner.invoke(cli, ["--human", "config", "show"])
 
         assert result.exit_code == 0
         assert "URL: https://galaxy.example.org" in result.output
         assert "API Key: ***...6789" in result.output
 
-    def test_auto_json_output_when_stdout_is_not_a_tty(self):
-        from galaxy_cli.cli import main
+    def test_default_output_is_json(self):
+        from galaxy_cli.cli import cli
 
+        runner = CliRunner()
         config = {
             "url": "https://galaxy.example.org",
             "url_source": "env",
@@ -102,53 +103,27 @@ class TestCli:
             "profiles": [],
         }
 
-        with patch.object(sys, "argv", ["galaxy-cli", "config", "show"]), \
-             patch("galaxy_cli.cli.config_mod.show_config", return_value=config), \
-             patch("galaxy_cli.cli.sys.stdout.isatty", return_value=False), \
-             patch("click.echo") as mock_echo:
-            main()
+        with patch("galaxy_cli.cli.config_mod.show_config", return_value=config):
+            result = runner.invoke(cli, ["config", "show"])
 
-        assert mock_echo.call_count == 1
-        payload = json.loads(mock_echo.call_args.args[0])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
         assert payload["url"] == "https://galaxy.example.org"
         assert payload["api_key"] == "***...6789"
-
-    def test_auto_text_output_when_stdout_is_a_tty(self):
-        from galaxy_cli.cli import main
-
-        config = {
-            "url": "https://galaxy.example.org",
-            "url_source": "env",
-            "api_key": "***...6789",
-            "api_key_source": "env",
-            "active_profile": None,
-            "profiles": [],
-        }
-
-        with patch.object(sys, "argv", ["galaxy-cli", "config", "show"]), \
-             patch("galaxy_cli.cli.config_mod.show_config", return_value=config), \
-             patch("galaxy_cli.cli.sys.stdout.isatty", return_value=True), \
-             patch("click.echo") as mock_echo:
-            main()
-
-        output_lines = [call.args[0] for call in mock_echo.call_args_list]
-        assert output_lines == [
-            "URL: https://galaxy.example.org [env]",
-            "API Key: ***...6789 [env]",
-        ]
 
     def test_repl_args_allow_overriding_default_json_mode(self):
         from galaxy_cli.cli import _normalize_repl_args
 
-        assert _normalize_repl_args(["history", "list"], True) == ["--json", "history", "list"]
-        assert _normalize_repl_args(["--no-json", "history", "list"], True) == ["--no-json", "history", "list"]
+        assert _normalize_repl_args(["history", "list"], True) == ["history", "list"]
+        assert _normalize_repl_args(["history", "list"], False) == ["--human", "history", "list"]
+        assert _normalize_repl_args(["--human", "history", "list"], False) == ["--human", "history", "list"]
         assert _normalize_repl_args(["--json", "history", "list"], False) == ["--json", "history", "list"]
 
     def test_json_mode_from_argv_only_considers_root_flags(self):
         from galaxy_cli.cli import _json_mode_from_argv
 
         assert _json_mode_from_argv(["--json", "tool", "show", "fastqc"]) is True
-        assert _json_mode_from_argv(["--profile", "main", "--no-json", "tool", "show", "fastqc"]) is False
+        assert _json_mode_from_argv(["--profile", "main", "--human", "tool", "show", "fastqc"]) is False
         assert _json_mode_from_argv(["tool", "show", "--json", "fastqc"]) is None
         assert _json_mode_from_argv(["tool", "run", "cutadapt", "-i", "adapter=--json"]) is None
 
