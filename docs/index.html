@@ -17,6 +17,7 @@
         <a href="#install">Install</a>
         <a href="#quickstart">Quickstart</a>
         <a href="#inputs">Inputs</a>
+        <a href="#examples">Examples</a>
         <a href="#commands">Commands</a>
         <a href="#release">Release</a>
       </nav>
@@ -45,7 +46,7 @@
           <pre><code>$ galaxy-cli history create "qc run" | jq -r .id
 bbd44e69cb8906b5...
 
-$ galaxy-cli tool run multiqc \
+$ galaxy-cli tool run "$MULTIQC_TOOL" \
   --history-id "$HID" \
   --inputs-json multiqc_inputs.json
 
@@ -86,6 +87,7 @@ galaxy-cli config test</code></pre>
           <li>
             <h3>Create a history and upload data</h3>
             <pre><code>HID=$(galaxy-cli history create "analysis" | jq -r .id)
+FASTQC_TOOL=$(galaxy-cli tool search fastqc | jq -r '.[0].id')
 DS=$(galaxy-cli dataset upload reads.fastq.gz \
   --history-id "$HID" \
   --file-type fastqsanger.gz | jq -r .id)</code></pre>
@@ -96,7 +98,7 @@ DS=$(galaxy-cli dataset upload reads.fastq.gz \
 {"input_file": "hda:$DS"}
 EOF
 
-galaxy-cli tool run fastqc \
+galaxy-cli tool run "$FASTQC_TOOL" \
   --history-id "$HID" \
   --inputs-json tool_inputs.json</code></pre>
           </li>
@@ -106,25 +108,147 @@ galaxy-cli tool run fastqc \
       <section class="band split" id="inputs">
         <div>
           <p class="eyebrow">Input encoding</p>
-          <h2>Nested inputs stay JSON</h2>
+          <h2>Mirror the tool schema</h2>
           <p>
-            Use `--inputs-json` for repeats, conditionals, collections, and
-            tools like MultiQC. `galaxy-cli` flattens the payload to Galaxy's
-            native form before submission.
+            Use <code>--inputs-json</code> for repeats, conditionals,
+            collections, and tools like MultiQC. Check your instance with
+            <code>galaxy-cli tool show TOOL_ID</code>, then write JSON that
+            follows those input names. <code>galaxy-cli</code> flattens the
+            payload to Galaxy's native form before submission.
+          </p>
+          <p>
+            Current IUC MultiQC FastQC inputs use
+            <code>results -> software_cond -> output</code>. For FastQC, pass
+            the raw data output, not the HTML report.
           </p>
         </div>
         <pre><code>{
   "results": [
     {
-      "software_name": "fastqc",
-      "input": {"src": "hda", "id": "DATASET_ID"}
-    },
-    {
-      "software_name": "fastqc",
-      "input": {"src": "hda", "id": "DATASET_ID"}
+      "software_cond": {
+        "software": "fastqc",
+        "output": [
+          {
+            "type": "data",
+            "input": [
+              {"src": "hda", "id": "FASTQC_RAW_DATA_1"},
+              {"src": "hda", "id": "FASTQC_RAW_DATA_2"}
+            ]
+          }
+        ]
+      }
     }
-  ]
+  ],
+  "title": "QC summary",
+  "flat": true,
+  "export": true
 }</code></pre>
+      </section>
+
+      <section class="band" id="examples">
+        <div class="section-heading">
+          <p class="eyebrow">Command examples</p>
+          <h2>Common Galaxy tasks</h2>
+        </div>
+        <div class="examples-grid">
+          <article>
+            <h3>Discover tools and input names</h3>
+            <pre><code>FASTQC_TOOL=$(galaxy-cli tool search fastqc | jq -r '.[0].id')
+MULTIQC_TOOL=$(galaxy-cli tool search multiqc | jq -r '.[0].id')
+galaxy-cli tool show "$FASTQC_TOOL"
+galaxy-cli --human tool show "$MULTIQC_TOOL"
+galaxy-cli tool show "$MULTIQC_TOOL" \
+  | jq '.inputs[] | select(.name == "results")'</code></pre>
+          </article>
+          <article>
+            <h3>Create and inspect a history</h3>
+            <pre><code>HID=$(galaxy-cli history create "qc $(date +%F)" | jq -r .id)
+galaxy-cli history show "$HID"
+galaxy-cli history show "$HID" --contents
+galaxy-cli dataset list --history-id "$HID"</code></pre>
+          </article>
+          <article>
+            <h3>Upload and inspect datasets</h3>
+            <pre><code>R1=$(galaxy-cli dataset upload reads_R1.fastq.gz \
+  --history-id "$HID" \
+  --file-type fastqsanger.gz | jq -r .id)
+
+galaxy-cli dataset show "$R1" --history-id "$HID"
+galaxy-cli dataset peek "$R1" --lines 5</code></pre>
+          </article>
+          <article>
+            <h3>Create collections</h3>
+            <pre><code>PAIR=$(galaxy-cli collection create sampleA \
+  --history-id "$HID" \
+  --collection-type paired \
+  --forward "$R1" \
+  --reverse "$R2" | jq -r .id)
+
+galaxy-cli collection show "$PAIR"</code></pre>
+          </article>
+          <article>
+            <h3>Run FastQC with JSON inputs</h3>
+            <pre><code>cat &gt; fastqc_inputs.json &lt;&lt;EOF
+{"input_file": "hda:$R1"}
+EOF
+
+galaxy-cli tool run "$FASTQC_TOOL" \
+  --history-id "$HID" \
+  --inputs-json fastqc_inputs.json</code></pre>
+          </article>
+          <article>
+            <h3>Run MultiQC on FastQC raw data</h3>
+            <pre><code>cat &gt; multiqc_inputs.json &lt;&lt;EOF
+{
+  "results": [
+    {
+      "software_cond": {
+        "software": "fastqc",
+        "output": [
+          {
+            "type": "data",
+            "input": [
+              {"src": "hda", "id": "$FASTQC_DATA_1"},
+              {"src": "hda", "id": "$FASTQC_DATA_2"}
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "flat": true,
+  "export": true
+}
+EOF
+
+galaxy-cli tool run "$MULTIQC_TOOL" \
+  --history-id "$HID" \
+  --inputs-json multiqc_inputs.json</code></pre>
+          </article>
+          <article>
+            <h3>Debug failed jobs</h3>
+            <pre><code>galaxy-cli job list --history-id "$HID" --state error
+galaxy-cli job show "$JOB_ID"
+galaxy-cli job show "$JOB_ID" --logs
+galaxy-cli job wait "$JOB_ID" --timeout 1800</code></pre>
+          </article>
+          <article>
+            <h3>Download outputs</h3>
+            <pre><code>galaxy-cli dataset download "$REPORT_ID" multiqc_report.html
+galaxy-cli dataset download "$DATA_ZIP_ID" multiqc_data.zip
+galaxy-cli history export "$HID"</code></pre>
+          </article>
+          <article>
+            <h3>Run and export workflows</h3>
+            <pre><code>WF=$(galaxy-cli workflow import workflow.ga | jq -r .id)
+galaxy-cli workflow show "$WF"
+galaxy-cli workflow run "$WF" \
+  --history-id "$HID" \
+  -i 0="$R1" \
+  --wait
+galaxy-cli workflow export "$WF" -o workflow.ga</code></pre>
+          </article>
+        </div>
       </section>
 
       <section class="band" id="commands">

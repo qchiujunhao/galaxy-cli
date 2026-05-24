@@ -926,11 +926,23 @@ def tool_run(ctx, tool_id, history_id, inputs, inputs_json, wait, timeout, poll_
       }
 
     \b
-    MultiQC-style repeated datasets:
+    MultiQC FastQC inputs in the current IUC wrapper:
       {
         "results": [
-          {"software_name": "fastqc", "input": {"src": "hda", "id": "DATASET_ID"}},
-          {"software_name": "fastqc", "input": {"src": "hda", "id": "DATASET_ID"}}
+          {
+            "software_cond": {
+              "software": "fastqc",
+              "output": [
+                {
+                  "type": "data",
+                  "input": [
+                    {"src": "hda", "id": "FASTQC_RAW_DATA_1"},
+                    {"src": "hda", "id": "FASTQC_RAW_DATA_2"}
+                  ]
+                }
+              ]
+            }
+          }
         ]
       }
 

@@ -130,13 +130,26 @@ galaxy-cli dataset download "$DATASET_ID" results/output.dat
 - Conditional or repeat params: prefer nested JSON in `--inputs-json`.
 - Flattened conditional paths use pipes when needed, for example
   `single_paired|paired_input`.
-- Repeated MultiQC-style dataset inputs can be written directly:
+- Repeated and conditional inputs should mirror `galaxy-cli tool show TOOL_ID`.
+- Current IUC MultiQC FastQC inputs use `results -> software_cond -> output`:
 
 ```json
 {
   "results": [
-    {"software_name": "fastqc", "input": {"src": "hda", "id": "DATASET_ID"}},
-    {"software_name": "fastqc", "input": {"src": "hda", "id": "DATASET_ID"}}
+    {
+      "software_cond": {
+        "software": "fastqc",
+        "output": [
+          {
+            "type": "data",
+            "input": [
+              {"src": "hda", "id": "FASTQC_RAW_DATA_1"},
+              {"src": "hda", "id": "FASTQC_RAW_DATA_2"}
+            ]
+          }
+        ]
+      }
+    }
   ]
 }
 ```

@@ -857,7 +857,7 @@ class TestTool:
             "id": collection_id,
         }
 
-    def test_run_tool_supports_multiqc_style_repeated_dataset_inputs(self):
+    def test_run_tool_supports_multiqc_fastqc_nested_dataset_inputs(self):
         from galaxy_cli.core.tool import run_tool
 
         client = self._mock_client()
@@ -874,16 +874,42 @@ class TestTool:
                     "type": "repeat",
                     "inputs": [
                         {
-                            "name": "software_name",
-                            "label": "Tool",
-                            "type": "select",
-                            "options": [["FastQC", "fastqc", False]],
-                        },
-                        {
-                            "name": "input",
-                            "label": "FastQC output",
-                            "type": "data",
-                            "extensions": ["txt", "html", "zip"],
+                            "name": "software_cond",
+                            "label": "",
+                            "type": "conditional",
+                            "test_param": {
+                                "name": "software",
+                                "label": "Which tool was used generate logs?",
+                                "type": "select",
+                                "options": [["FastQC", "fastqc", False]],
+                            },
+                            "cases": [
+                                {
+                                    "value": "fastqc",
+                                    "inputs": [
+                                        {
+                                            "name": "output",
+                                            "label": "FastQC output",
+                                            "type": "repeat",
+                                            "inputs": [
+                                                {
+                                                    "name": "type",
+                                                    "label": "Type of FastQC output?",
+                                                    "type": "select",
+                                                    "options": [["Raw data", "data", False]],
+                                                },
+                                                {
+                                                    "name": "input",
+                                                    "label": "FastQC output",
+                                                    "type": "data",
+                                                    "multiple": True,
+                                                    "extensions": ["txt"],
+                                                },
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
                         },
                     ],
                 }
@@ -899,12 +925,18 @@ class TestTool:
             inputs={
                 "results": [
                     {
-                        "software_name": "fastqc",
-                        "input": {"src": "hda", "id": dataset_ids[0]},
-                    },
-                    {
-                        "software_name": "fastqc",
-                        "input": dataset_ids[1],
+                        "software_cond": {
+                            "software": "fastqc",
+                            "output": [
+                                {
+                                    "type": "data",
+                                    "input": [
+                                        {"src": "hda", "id": dataset_ids[0]},
+                                        {"src": "hda", "id": dataset_ids[1]},
+                                    ],
+                                }
+                            ],
+                        }
                     },
                 ]
             },
@@ -912,10 +944,12 @@ class TestTool:
 
         _, kwargs = client.post.call_args
         submitted = kwargs["json_data"]["inputs"]
-        assert submitted["results_0|software_name"] == "fastqc"
-        assert submitted["results_0|input"] == {"src": "hda", "id": dataset_ids[0]}
-        assert submitted["results_1|software_name"] == "fastqc"
-        assert submitted["results_1|input"] == {"src": "hda", "id": dataset_ids[1]}
+        assert submitted["results_0|software_cond|software"] == "fastqc"
+        assert submitted["results_0|software_cond|output_0|type"] == "data"
+        assert submitted["results_0|software_cond|output_0|input"] == [
+            {"src": "hda", "id": dataset_ids[0]},
+            {"src": "hda", "id": dataset_ids[1]},
+        ]
 
     def test_run_tool_keeps_plain_scalar_inputs(self):
         from galaxy_cli.core.tool import run_tool

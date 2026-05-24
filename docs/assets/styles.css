@@ -235,7 +235,8 @@ code {
 }
 
 .code-grid,
-.command-grid {
+.command-grid,
+.examples-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
@@ -243,6 +244,7 @@ code {
 
 .code-grid > div,
 .command-grid article,
+.examples-grid article,
 .steps li {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -261,6 +263,7 @@ code {
 
 .steps pre,
 .code-grid pre,
+.examples-grid pre,
 .split pre {
   border-radius: 7px;
 }
@@ -285,6 +288,22 @@ code {
 .command-grid p {
   margin: 0;
   color: var(--muted);
+}
+
+.examples-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.examples-grid article {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.examples-grid pre {
+  flex: 1;
+  min-height: 180px;
 }
 
 .pipeline {
@@ -369,6 +388,7 @@ code {
   .split,
   .steps,
   .command-grid,
+  .examples-grid,
   .pipeline {
     grid-template-columns: 1fr;
   }

@@ -6,6 +6,14 @@ import re
 _GALAXY_ID_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 
 
+def _is_data_ref(value):
+    return (
+        isinstance(value, dict)
+        and set(value.keys()) <= {"src", "id", "values"}
+        and "id" in value
+    )
+
+
 def _searchable_text(tool):
     return " ".join(
         [
@@ -264,6 +272,8 @@ def _canonical_input_type_key(name):
 def _normalize_tool_input(name, value, input_types):
     """Convert CLI key=value strings to Galaxy tool input payloads."""
     input_type = input_types.get(name) or input_types.get(_canonical_input_type_key(name), "")
+    if isinstance(value, list) and input_type in {"data", "data_collection"}:
+        return [_normalize_tool_input(name, item, input_types) for item in value]
     if isinstance(value, str) and input_type in {"data", "data_collection"}:
         if ":" in value:
             src, dataset_id = value.split(":", 1)
@@ -294,12 +304,15 @@ def _flatten_nested_inputs(inputs):
     def _walk(prefix, value):
         if isinstance(value, dict):
             # Pass through dataset/collection refs unchanged.
-            if set(value.keys()) <= {"src", "id", "values"} and "id" in value:
+            if _is_data_ref(value):
                 flat[prefix] = value
                 return
             for k, v in value.items():
                 child = f"{prefix}|{k}" if prefix else k
                 _walk(child, v)
+        elif isinstance(value, list) and value and all(_is_data_ref(v) for v in value):
+            # Multiple=true data inputs use a list of dataset refs under one key.
+            flat[prefix] = value
         elif isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
             # Repeat block: index each item.
             for idx, item in enumerate(value):

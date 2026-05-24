@@ -215,12 +215,18 @@ class TestCli:
         inputs_payload = {
             "results": [
                 {
-                    "software_name": "fastqc",
-                    "input": {"src": "hda", "id": "f9cad7b01a4721358dba0ff950c535fa"},
-                },
-                {
-                    "software_name": "fastqc",
-                    "input": {"src": "hda", "id": "a6b7c8d9e0f112233445566778899abc"},
+                    "software_cond": {
+                        "software": "fastqc",
+                        "output": [
+                            {
+                                "type": "data",
+                                "input": [
+                                    {"src": "hda", "id": "f9cad7b01a4721358dba0ff950c535fa"},
+                                    {"src": "hda", "id": "a6b7c8d9e0f112233445566778899abc"},
+                                ],
+                            }
+                        ],
+                    }
                 },
             ]
         }
