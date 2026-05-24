@@ -488,8 +488,15 @@ def dataset_list(ctx, history_id, limit):
 @click.option("--history-id", default=None, help="Target history ID")
 @click.option("--file-type", default="auto", help="Galaxy file type")
 @click.option("--dbkey", default="?", help="Genome build")
+@click.option(
+    "--wait/--no-wait",
+    default=True,
+    help="Wait for the upload job to reach a terminal state. Default: --wait.",
+)
+@click.option("--timeout", default=1800, help="Max wait time in seconds (default: 1800)")
+@click.option("--poll-interval", default=30, help="Seconds between status checks (default: 30)")
 @click.pass_context
-def dataset_upload(ctx, file_path, history_id, file_type, dbkey):
+def dataset_upload(ctx, file_path, history_id, file_type, dbkey, wait, timeout, poll_interval):
     """Upload a local file to a Galaxy history.
 
     \b
@@ -504,7 +511,16 @@ def dataset_upload(ctx, file_path, history_id, file_type, dbkey):
     """
     client = _get_client(ctx)
     hid = history_id or _require_history(ctx)
-    result = dataset_mod.upload_dataset(client, hid, file_path, file_type=file_type, dbkey=dbkey)
+    result = dataset_mod.upload_dataset(
+        client,
+        hid,
+        file_path,
+        file_type=file_type,
+        dbkey=dbkey,
+        wait=wait,
+        timeout=timeout,
+        poll_interval=poll_interval,
+    )
     if result.get("id"):
         session_mod.track_dataset(result["id"])
     _output(result, lambda d: click.echo(f"Uploaded: {d.get('name', file_path)} ({d.get('id', 'pending')})"))
@@ -886,6 +902,8 @@ def tool_run(ctx, tool_id, history_id, inputs, inputs_json, wait, timeout, poll_
     Parameter encoding rules (Galaxy native format):
       • Datasets:     -i input=hda:DATASET_ID  (or just the dataset id)
       • Collections:  -i input=hdca:COLLECTION_ID
+      • Nested dataset/collection JSON may use {"src":"hda","id":"DATASET_ID"}
+        or {"src":"hdca","id":"COLLECTION_ID"}
       • Booleans:     -i some_flag=true        (use true / false, not yes/no)
       • Repeat blocks use pipe syntax with a 0-based index per item:
             -i operations_0|op_name=mean
@@ -905,6 +923,15 @@ def tool_run(ctx, tool_id, history_id, inputs, inputs_json, wait, timeout, poll_
           {"op_name": "sum",  "op_column": "3"}
         ],
         "cond": {"selector": "advanced", "threshold": "0.5"}
+      }
+
+    \b
+    MultiQC-style repeated datasets:
+      {
+        "results": [
+          {"software_name": "fastqc", "input": {"src": "hda", "id": "DATASET_ID"}},
+          {"software_name": "fastqc", "input": {"src": "hda", "id": "DATASET_ID"}}
+        ]
       }
 
     By default this waits for the job and, in JSON mode, refreshes output

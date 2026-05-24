@@ -229,19 +229,41 @@ def show_tool(client, tool_id, full=False):
 
 
 def _collect_input_types(inputs):
-    """Map input names to their Galaxy input types."""
+    """Map flat input paths to their Galaxy input types."""
     input_types = {}
-    for inp in inputs or []:
+
+    def _add(inp, prefix=""):
         name = inp.get("name")
         input_type = inp.get("type")
+        path = f"{prefix}|{name}" if prefix and name else name
         if name and input_type:
-            input_types[name] = input_type
+            input_types[path] = input_type
+        if not path:
+            return
+        if input_type == "conditional":
+            test_param = inp.get("test_param") or {}
+            if isinstance(test_param, dict):
+                _add(test_param, path)
+            for case in inp.get("cases", []) or []:
+                for child in case.get("inputs", []) or []:
+                    _add(child, path)
+        elif input_type in {"repeat", "section"}:
+            for child in inp.get("inputs", []) or []:
+                _add(child, path)
+
+    for inp in inputs or []:
+        _add(inp)
     return input_types
+
+
+def _canonical_input_type_key(name):
+    """Normalize repeat-indexed keys like ``results_0|input`` for lookup."""
+    return re.sub(r"_(\d+)(?=\|)", "", name)
 
 
 def _normalize_tool_input(name, value, input_types):
     """Convert CLI key=value strings to Galaxy tool input payloads."""
-    input_type = input_types.get(name, "")
+    input_type = input_types.get(name) or input_types.get(_canonical_input_type_key(name), "")
     if isinstance(value, str) and input_type in {"data", "data_collection"}:
         if ":" in value:
             src, dataset_id = value.split(":", 1)

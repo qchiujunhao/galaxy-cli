@@ -199,6 +199,64 @@ class TestCli:
         wait.assert_not_called()
         refresh.assert_not_called()
 
+    def test_tool_run_accepts_multiqc_style_inputs_json(self, tmp_path):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        inputs_path = tmp_path / "multiqc_inputs.json"
+        inputs_payload = {
+            "results": [
+                {
+                    "software_name": "fastqc",
+                    "input": {"src": "hda", "id": "f9cad7b01a4721358dba0ff950c535fa"},
+                },
+                {
+                    "software_name": "fastqc",
+                    "input": {"src": "hda", "id": "a6b7c8d9e0f112233445566778899abc"},
+                },
+            ]
+        }
+        inputs_path.write_text(json.dumps(inputs_payload))
+        run_result = {
+            "tool_id": "multiqc",
+            "jobs": [{"id": "job-1"}],
+            "outputs": [
+                {"id": "html-1", "name": "MultiQC report", "extension": "html"},
+                {"id": "raw-1", "name": "MultiQC data", "extension": "zip"},
+            ],
+        }
+        client = object()
+
+        with patch("galaxy_cli.cli._get_client", return_value=client), \
+             patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result) as run_tool, \
+             patch("galaxy_cli.cli.tool_mod.refresh_output_details", return_value=run_result["outputs"]), \
+             patch("galaxy_cli.cli.job_mod.wait_for_job", return_value={"id": "job-1", "state": "ok"}), \
+             patch("galaxy_cli.cli.session_mod.track_job"):
+            result = runner.invoke(
+                cli,
+                [
+                    "--json",
+                    "tool",
+                    "run",
+                    "multiqc",
+                    "--history-id",
+                    "hist-1",
+                    "--inputs-json",
+                    str(inputs_path),
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        run_tool.assert_called_once_with(
+            client,
+            "multiqc",
+            "hist-1",
+            inputs=inputs_payload,
+        )
+        data = json.loads(result.stdout)
+        assert data["jobs"][0]["id"] == "job-1"
+        assert [output["id"] for output in data["outputs"]] == ["html-1", "raw-1"]
+
     def test_invocation_wait_keeps_stdout_json_clean(self):
         from galaxy_cli.cli import cli
 

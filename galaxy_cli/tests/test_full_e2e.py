@@ -155,9 +155,19 @@ class TestDatasetE2E:
                 test_file = f.name
 
             # Upload
-            result = upload_dataset(client, hid, test_file, file_type="txt")
+            result = upload_dataset(
+                client,
+                hid,
+                test_file,
+                file_type="txt",
+                wait=True,
+                timeout=180,
+                poll_interval=5,
+            )
             assert result.get("id") or result.get("status")
             print(f"\n  Uploaded: {result}")
+            if any(wait.get("state") == "timeout" for wait in result.get("wait_results", [])):
+                pytest.skip("Galaxy upload job did not finish within 180s")
 
             # Download
             with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as out:
@@ -172,6 +182,8 @@ class TestDatasetE2E:
         finally:
             delete_history(client, hid)
             for p in [test_file, out_path]:
+                if not p:
+                    continue
                 try:
                     os.unlink(p)
                 except OSError:
@@ -223,9 +235,11 @@ class TestCLISubprocess:
         assert "history" in result.stdout
 
     def test_version(self):
+        from galaxy_cli import __version__
+
         result = self._run(["--version"])
         assert result.returncode == 0
-        assert "1.0.0" in result.stdout
+        assert __version__ in result.stdout
 
     def test_config_show_json(self):
         result = self._run(["--json", "config", "show"])

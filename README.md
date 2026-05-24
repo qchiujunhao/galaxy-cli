@@ -78,3 +78,8 @@ galaxy-cli
 ```bash
 python3 -m pytest galaxy_cli/tests/ -v
 ```
+
+## Releases
+
+Releases are published from GitHub Releases through PyPI Trusted Publishing.
+See [RELEASE.md](RELEASE.md) for the one-time PyPI setup and release checklist.

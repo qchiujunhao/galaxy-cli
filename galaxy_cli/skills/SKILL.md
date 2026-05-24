@@ -73,6 +73,9 @@ FWD=$(galaxy-cli dataset upload inputs/reads_1.fastq.gz --history-id "$HID" --fi
 REV=$(galaxy-cli dataset upload inputs/reads_2.fastq.gz --history-id "$HID" --file-type fastqsanger.gz | jq -r .id)
 ```
 
+`dataset upload` waits by default. Do not create collections from uploaded
+datasets until the returned upload JSON reports `state: "ok"`.
+
 Create collections:
 
 ```bash
@@ -119,11 +122,24 @@ galaxy-cli dataset download "$DATASET_ID" results/output.dat
 
 - Dataset: `hda:DATASET_ID`
 - Dataset collection: `hdca:COLLECTION_ID`
+- For dataset or collection inputs nested inside conditionals or repeats, use
+  the native JSON object form: `{"src": "hda", "id": "DATASET_ID"}` or
+  `{"src": "hdca", "id": "COLLECTION_ID"}`.
 - Library dataset: `ldda:DATASET_ID`
 - Boolean: `true` or `false`
 - Conditional or repeat params: prefer nested JSON in `--inputs-json`.
 - Flattened conditional paths use pipes when needed, for example
   `single_paired|paired_input`.
+- Repeated MultiQC-style dataset inputs can be written directly:
+
+```json
+{
+  "results": [
+    {"software_name": "fastqc", "input": {"src": "hda", "id": "DATASET_ID"}},
+    {"software_name": "fastqc", "input": {"src": "hda", "id": "DATASET_ID"}}
+  ]
+}
+```
 
 ## What To Read Next
 

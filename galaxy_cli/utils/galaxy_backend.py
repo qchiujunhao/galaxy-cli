@@ -334,8 +334,7 @@ class GalaxyClient:
                 "file_type": file_type,
                 "dbkey": dbkey,
                 "files_0|type": "upload_dataset",
-                "files_0|space_to_tab": "No",
-                "files_0|to_posix_lines": "No",
+                "files_0|to_posix_lines": False,
             }),
         }
         upload_timeout = max(self.timeout, 300)

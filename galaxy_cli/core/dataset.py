@@ -6,21 +6,53 @@ from galaxy_cli.utils.galaxy_backend import (
     EXIT_USER_ERROR,
     GalaxyBackendError,
 )
+from galaxy_cli.core.job import wait_for_job
 
 
-def upload_dataset(client, history_id, file_path, file_type="auto", dbkey="?"):
+def upload_dataset(
+    client,
+    history_id,
+    file_path,
+    file_type="auto",
+    dbkey="?",
+    wait=False,
+    timeout=1800,
+    poll_interval=30,
+):
     """Upload a local file to a Galaxy history."""
     result = client.upload_file(file_path, history_id, file_type=file_type, dbkey=dbkey)
     outputs = result.get("outputs", [])
+    jobs = result.get("jobs", [])
     if outputs:
         ds = outputs[0]
-        return {
+        uploaded = {
             "id": ds.get("id", ""),
             "name": ds.get("name", ""),
             "state": ds.get("state", ""),
             "history_id": history_id,
             "file_type": ds.get("extension", file_type),
         }
+        if wait and jobs:
+            uploaded["wait_results"] = [
+                wait_for_job(
+                    client,
+                    job.get("id", ""),
+                    max_wait=timeout,
+                    poll_interval=poll_interval,
+                )
+                for job in jobs
+                if job.get("id")
+            ]
+            if uploaded["id"]:
+                refreshed = show_dataset(client, uploaded["id"], history_id=history_id)
+                uploaded.update({
+                    "state": refreshed.get("state", uploaded["state"]),
+                    "file_type": refreshed.get("extension", uploaded["file_type"]),
+                    "file_size": refreshed.get("file_size", 0),
+                    "data_type": refreshed.get("data_type", ""),
+                    "misc_blurb": refreshed.get("misc_blurb", ""),
+                })
+        return uploaded
     return {"status": "uploaded", "history_id": history_id, "raw": result}
 
 

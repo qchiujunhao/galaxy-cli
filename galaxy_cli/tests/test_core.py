@@ -256,6 +256,40 @@ class TestDataset:
         assert result["id"] == "d1"
         assert result["name"] == "reads.fastq"
 
+    def test_upload_dataset_waits_and_refreshes(self):
+        from galaxy_cli.core.dataset import upload_dataset
+
+        client = self._mock_client()
+        client.upload_file.return_value = {
+            "jobs": [{"id": "j1"}],
+            "outputs": [{"id": "d1", "name": "reads.fastq", "state": "queued", "extension": "fastqsanger"}],
+        }
+        client.get.side_effect = [
+            {"id": "j1", "state": "running"},
+            {"id": "j1", "state": "ok", "exit_code": 0},
+            {
+                "id": "d1",
+                "name": "reads.fastq",
+                "state": "ok",
+                "extension": "fastqsanger",
+                "file_size": 123,
+                "data_type": "galaxy.datatypes.sequence.FastqSanger",
+            },
+        ]
+
+        result = upload_dataset(
+            client,
+            "h1",
+            "/tmp/reads.fastq",
+            wait=True,
+            timeout=10,
+            poll_interval=0,
+        )
+
+        assert result["state"] == "ok"
+        assert result["file_size"] == 123
+        assert result["wait_results"][0]["state"] == "ok"
+
     def test_show_dataset(self):
         from galaxy_cli.core.dataset import show_dataset
 
@@ -703,6 +737,185 @@ class TestTool:
 
         _, kwargs = client.post.call_args
         assert kwargs["json_data"]["inputs"]["reads"] == {"src": "hdca", "id": dataset_id}
+
+    def test_run_tool_wraps_nested_conditional_collection_input(self):
+        from galaxy_cli.core.tool import run_tool
+
+        client = self._mock_client()
+        collection_id = "790b3f7be925056d"
+        client.get.return_value = {
+            "id": "bowtie2",
+            "name": "Bowtie2",
+            "version": "2.5.4",
+            "description": "",
+            "inputs": [
+                {
+                    "name": "library",
+                    "label": "",
+                    "type": "conditional",
+                    "test_param": {
+                        "name": "type",
+                        "label": "Is this library single or paired?",
+                        "type": "select",
+                        "options": [["Paired collection", "paired_collection", False]],
+                    },
+                    "cases": [
+                        {
+                            "value": "paired_collection",
+                            "inputs": [
+                                {
+                                    "name": "input_1",
+                                    "label": "Paired reads",
+                                    "type": "data_collection",
+                                    "collection_type": "paired",
+                                    "extensions": ["fastqsanger.gz"],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "outputs": [],
+        }
+        client.post.return_value = {"jobs": [], "outputs": []}
+
+        run_tool(
+            client,
+            "bowtie2",
+            "h1",
+            inputs={"library": {"type": "paired_collection", "input_1": f"hdca:{collection_id}"}},
+        )
+
+        _, kwargs = client.post.call_args
+        assert kwargs["json_data"]["inputs"]["library|input_1"] == {
+            "src": "hdca",
+            "id": collection_id,
+        }
+
+    def test_run_tool_wraps_repeat_conditional_collection_input(self):
+        from galaxy_cli.core.tool import run_tool
+
+        client = self._mock_client()
+        collection_id = "b4d06ba6296b8a12"
+        client.get.return_value = {
+            "id": "multiqc",
+            "name": "MultiQC",
+            "version": "1.33",
+            "description": "",
+            "inputs": [
+                {
+                    "name": "results",
+                    "label": "Results",
+                    "type": "repeat",
+                    "inputs": [
+                        {
+                            "name": "software_cond",
+                            "label": "",
+                            "type": "conditional",
+                            "test_param": {
+                                "name": "software",
+                                "label": "Tool",
+                                "type": "select",
+                                "options": [["Bowtie2", "bowtie2", False]],
+                            },
+                            "cases": [
+                                {
+                                    "value": "bowtie2",
+                                    "inputs": [
+                                        {
+                                            "name": "input",
+                                            "label": "Bowtie2 stats",
+                                            "type": "data_collection",
+                                            "collection_type": "list",
+                                            "extensions": ["txt"],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "outputs": [],
+        }
+        client.post.return_value = {"jobs": [], "outputs": []}
+
+        run_tool(
+            client,
+            "multiqc",
+            "h1",
+            inputs={
+                "results": [
+                    {"software_cond": {"software": "bowtie2", "input": f"hdca:{collection_id}"}}
+                ]
+            },
+        )
+
+        _, kwargs = client.post.call_args
+        assert kwargs["json_data"]["inputs"]["results_0|software_cond|input"] == {
+            "src": "hdca",
+            "id": collection_id,
+        }
+
+    def test_run_tool_supports_multiqc_style_repeated_dataset_inputs(self):
+        from galaxy_cli.core.tool import run_tool
+
+        client = self._mock_client()
+        dataset_ids = ["f9cad7b01a4721358dba0ff950c535fa", "a6b7c8d9e0f112233445566778899abc"]
+        client.get.return_value = {
+            "id": "multiqc",
+            "name": "MultiQC",
+            "version": "1.33",
+            "description": "",
+            "inputs": [
+                {
+                    "name": "results",
+                    "label": "Results",
+                    "type": "repeat",
+                    "inputs": [
+                        {
+                            "name": "software_name",
+                            "label": "Tool",
+                            "type": "select",
+                            "options": [["FastQC", "fastqc", False]],
+                        },
+                        {
+                            "name": "input",
+                            "label": "FastQC output",
+                            "type": "data",
+                            "extensions": ["txt", "html", "zip"],
+                        },
+                    ],
+                }
+            ],
+            "outputs": [],
+        }
+        client.post.return_value = {"jobs": [], "outputs": []}
+
+        run_tool(
+            client,
+            "multiqc",
+            "h1",
+            inputs={
+                "results": [
+                    {
+                        "software_name": "fastqc",
+                        "input": {"src": "hda", "id": dataset_ids[0]},
+                    },
+                    {
+                        "software_name": "fastqc",
+                        "input": dataset_ids[1],
+                    },
+                ]
+            },
+        )
+
+        _, kwargs = client.post.call_args
+        submitted = kwargs["json_data"]["inputs"]
+        assert submitted["results_0|software_name"] == "fastqc"
+        assert submitted["results_0|input"] == {"src": "hda", "id": dataset_ids[0]}
+        assert submitted["results_1|software_name"] == "fastqc"
+        assert submitted["results_1|input"] == {"src": "hda", "id": dataset_ids[1]}
 
     def test_run_tool_keeps_plain_scalar_inputs(self):
         from galaxy_cli.core.tool import run_tool
@@ -1375,8 +1588,8 @@ class TestGalaxyBackend:
         with patch("galaxy_cli.utils.galaxy_backend.requests.post", side_effect=fake_post):
             client.upload_file(str(upload_file), "h1")
 
-        assert observed["inputs"]["files_0|space_to_tab"] == "No"
-        assert observed["inputs"]["files_0|to_posix_lines"] == "No"
+        assert "files_0|space_to_tab" not in observed["inputs"]
+        assert observed["inputs"]["files_0|to_posix_lines"] is False
 
     def test_upload_file_closes_handle_on_request_error(self, tmp_path):
         from galaxy_cli.utils.galaxy_backend import (

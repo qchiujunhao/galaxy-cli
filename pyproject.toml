@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77", "wheel"]
+requires = ["setuptools>=77", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -28,9 +28,6 @@ classifiers = [
 [project.scripts]
 galaxy-cli = "galaxy_cli.cli:main"
 
-[tool.setuptools.dynamic]
-version = { attr = "galaxy_cli.__version__" }
-
 [tool.setuptools.packages.find]
 include = ["galaxy_cli*"]
 
@@ -39,3 +36,5 @@ include = ["galaxy_cli*"]
 
 [tool.pytest.ini_options]
 testpaths = ["galaxy_cli/tests"]
+
+[tool.setuptools_scm]

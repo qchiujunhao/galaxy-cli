@@ -5,6 +5,8 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+.DS_Store
+**/.DS_Store
 
 EVAL_PLAN.md
 PAPER_READINESS.md
@@ -16,5 +18,9 @@ benchmark/.env
 MANUAL_*.md
 BIOINFORMATICS_*.md
 /.claude
+/galaxy_cli/.claude/
 /benchmark
+/manuscript/
+/tmp_*/
+uv.lock
 to-do.md
