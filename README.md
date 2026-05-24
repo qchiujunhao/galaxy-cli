@@ -55,6 +55,8 @@ pass `--history-id` explicitly instead of relying on shared session state.
 
 ## Usage
 
+Documentation site: https://qchiujunhao.github.io/galaxy-cli/
+
 ```bash
 galaxy-cli history list
 galaxy-cli history create "My Analysis"

@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Documentation for galaxy-cli, an agent-friendly command line interface for Galaxy.">
+    <title>galaxy-cli documentation</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="galaxy-cli documentation home">
+        <span class="brand-mark" aria-hidden="true">g</span>
+        <span>galaxy-cli</span>
+      </a>
+      <nav class="nav" aria-label="Primary navigation">
+        <a href="#install">Install</a>
+        <a href="#quickstart">Quickstart</a>
+        <a href="#inputs">Inputs</a>
+        <a href="#commands">Commands</a>
+        <a href="#release">Release</a>
+      </nav>
+      <a class="button ghost" href="https://github.com/qchiujunhao/galaxy-cli">GitHub</a>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Galaxy automation from the shell</p>
+          <h1>galaxy-cli</h1>
+          <p class="lede">
+            A compact command line interface for Galaxy histories, datasets,
+            collections, tools, workflows, jobs, and release-grade agent runs.
+          </p>
+          <div class="actions">
+            <a class="button primary" href="#install">Install</a>
+            <a class="button secondary" href="#quickstart">Run your first job</a>
+          </div>
+        </div>
+
+        <figure class="terminal" aria-label="Terminal showing a galaxy-cli tool run">
+          <div class="terminal-bar">
+            <span></span><span></span><span></span>
+          </div>
+          <pre><code>$ galaxy-cli history create "qc run" | jq -r .id
+bbd44e69cb8906b5...
+
+$ galaxy-cli tool run multiqc \
+  --history-id "$HID" \
+  --inputs-json multiqc_inputs.json
+
+{"jobs":[{"id":"...","state":"ok"}],
+ "outputs":[{"name":"MultiQC report","state":"ok"}]}</code></pre>
+        </figure>
+      </section>
+
+      <section class="band" id="install">
+        <div class="section-heading">
+          <p class="eyebrow">Install</p>
+          <h2>Install from PyPI</h2>
+        </div>
+        <div class="code-grid">
+          <div>
+            <h3>With uv</h3>
+            <pre><code>uv tool install galaxy-cli</code></pre>
+          </div>
+          <div>
+            <h3>With pip</h3>
+            <pre><code>python3 -m pip install galaxy-cli</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="band" id="quickstart">
+        <div class="section-heading">
+          <p class="eyebrow">Quickstart</p>
+          <h2>Connect, upload, run</h2>
+        </div>
+        <ol class="steps">
+          <li>
+            <h3>Configure Galaxy access</h3>
+            <pre><code>export GALAXY_URL=https://usegalaxy.org
+export GALAXY_API_KEY=your-api-key
+galaxy-cli config test</code></pre>
+          </li>
+          <li>
+            <h3>Create a history and upload data</h3>
+            <pre><code>HID=$(galaxy-cli history create "analysis" | jq -r .id)
+DS=$(galaxy-cli dataset upload reads.fastq.gz \
+  --history-id "$HID" \
+  --file-type fastqsanger.gz | jq -r .id)</code></pre>
+          </li>
+          <li>
+            <h3>Run a Galaxy tool</h3>
+            <pre><code>cat &gt; tool_inputs.json &lt;&lt;EOF
+{"input_file": "hda:$DS"}
+EOF
+
+galaxy-cli tool run fastqc \
+  --history-id "$HID" \
+  --inputs-json tool_inputs.json</code></pre>
+          </li>
+        </ol>
+      </section>
+
+      <section class="band split" id="inputs">
+        <div>
+          <p class="eyebrow">Input encoding</p>
+          <h2>Nested inputs stay JSON</h2>
+          <p>
+            Use `--inputs-json` for repeats, conditionals, collections, and
+            tools like MultiQC. `galaxy-cli` flattens the payload to Galaxy's
+            native form before submission.
+          </p>
+        </div>
+        <pre><code>{
+  "results": [
+    {
+      "software_name": "fastqc",
+      "input": {"src": "hda", "id": "DATASET_ID"}
+    },
+    {
+      "software_name": "fastqc",
+      "input": {"src": "hda", "id": "DATASET_ID"}
+    }
+  ]
+}</code></pre>
+      </section>
+
+      <section class="band" id="commands">
+        <div class="section-heading">
+          <p class="eyebrow">Command groups</p>
+          <h2>Core CLI surface</h2>
+        </div>
+        <div class="command-grid">
+          <article>
+            <h3>config</h3>
+            <p>Show configuration and test Galaxy connectivity.</p>
+          </article>
+          <article>
+            <h3>history</h3>
+            <p>Create, copy, list, inspect, publish, and delete histories.</p>
+          </article>
+          <article>
+            <h3>dataset</h3>
+            <p>Upload, download, show, delete, and inspect datasets.</p>
+          </article>
+          <article>
+            <h3>collection</h3>
+            <p>Create list, paired, and list-of-pairs collections.</p>
+          </article>
+          <article>
+            <h3>tool</h3>
+            <p>Search, inspect, run, wait, and return compact output metadata.</p>
+          </article>
+          <article>
+            <h3>workflow</h3>
+            <p>List, show, export, run, and monitor Galaxy workflows.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="band split" id="release">
+        <div>
+          <p class="eyebrow">Release flow</p>
+          <h2>GitHub Release to PyPI</h2>
+          <p>
+            `galaxy-cli` uses a pandas-style release flow: publish a GitHub
+            Release, build artifacts in Actions, attach them to the Release,
+            and publish to PyPI with Trusted Publishing.
+          </p>
+          <a class="button secondary" href="https://github.com/qchiujunhao/galaxy-cli/blob/main/RELEASE.md">Release checklist</a>
+        </div>
+        <div class="pipeline" aria-label="Release pipeline">
+          <div><span>1</span><strong>Tag</strong><small>vX.Y.Z</small></div>
+          <div><span>2</span><strong>Test</strong><small>pytest</small></div>
+          <div><span>3</span><strong>Build</strong><small>sdist + wheel</small></div>
+          <div><span>4</span><strong>Publish</strong><small>PyPI OIDC</small></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>galaxy-cli documentation</span>
+      <a href="https://pypi.org/project/galaxy-cli/">PyPI</a>
+      <a href="https://github.com/qchiujunhao/galaxy-cli">GitHub</a>
+      <a href="https://galaxyproject.org/">Galaxy Project</a>
+    </footer>
+  </body>
+</html>
