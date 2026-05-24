@@ -622,9 +622,6 @@ def collection_create(ctx, name, history_id, ctype, forward, reverse, elements, 
     The returned collection ID can be used as a tool/workflow input:
       -i input=hdca:COLLECTION_ID
     """
-    client = _get_client(ctx)
-    hid = history_id or _require_history(ctx)
-
     try:
         if ctype == "paired" and forward and reverse and elements:
             raise click.UsageError(
@@ -662,6 +659,9 @@ def collection_create(ctx, name, history_id, ctype, forward, reverse, elements, 
             element_ids = collection_mod.build_list_elements(list(elements))
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
+
+    client = _get_client(ctx)
+    hid = history_id or _require_history(ctx)
 
     result = collection_mod.create_collection(
         client, hid, name, collection_type=ctype,
