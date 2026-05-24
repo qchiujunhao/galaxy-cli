@@ -1,5 +1,6 @@
 """CLI behavior tests."""
 
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -8,6 +9,13 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 import pytest
+
+
+def _cli_runner(separate_stderr=False):
+    kwargs = {}
+    if separate_stderr and "mix_stderr" in inspect.signature(CliRunner).parameters:
+        kwargs["mix_stderr"] = False
+    return CliRunner(**kwargs)
 
 
 @pytest.fixture
@@ -144,7 +152,7 @@ class TestCli:
     def test_tool_run_wait_keeps_stdout_json_clean(self):
         from galaxy_cli.cli import cli
 
-        runner = CliRunner()
+        runner = _cli_runner(separate_stderr=True)
         run_result = {
             "tool_id": "fastp",
             "jobs": [{"id": "job-1"}],
@@ -202,7 +210,7 @@ class TestCli:
     def test_tool_run_accepts_multiqc_style_inputs_json(self, tmp_path):
         from galaxy_cli.cli import cli
 
-        runner = CliRunner()
+        runner = _cli_runner(separate_stderr=True)
         inputs_path = tmp_path / "multiqc_inputs.json"
         inputs_payload = {
             "results": [
@@ -260,7 +268,7 @@ class TestCli:
     def test_invocation_wait_keeps_stdout_json_clean(self):
         from galaxy_cli.cli import cli
 
-        runner = CliRunner()
+        runner = _cli_runner(separate_stderr=True)
         wait_result = {"id": "inv-1", "state": "scheduled", "waited_seconds": 12}
 
         with patch("galaxy_cli.cli._get_client", return_value=object()), \
