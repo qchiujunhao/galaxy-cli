@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://qchiujunhao.github.io/galaxy-cli/sitemap.xml

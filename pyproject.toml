@@ -5,11 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "galaxy-cli"
 dynamic = ["version"]
-description = "CLI harness for the Galaxy bioinformatics platform"
+description = "Galaxy bioinformatics CLI for automating histories, datasets, tools, workflows, and jobs via the Galaxy REST API"
 readme = "README.md"
 license = "MIT"
 authors = [
-    { name = "cli-anything" },
+    { name = "Junhao Qiu" },
+]
+keywords = [
+    "Galaxy",
+    "bioinformatics",
+    "CLI",
+    "workflow automation",
+    "REST API",
+    "genomics",
+    "research software",
 ]
 requires-python = ">=3.9"
 dependencies = [
@@ -27,6 +36,13 @@ classifiers = [
 
 [project.scripts]
 galaxy-cli = "galaxy_cli.cli:main"
+
+[project.urls]
+Homepage = "https://qchiujunhao.github.io/galaxy-cli/"
+Documentation = "https://qchiujunhao.github.io/galaxy-cli/"
+Source = "https://github.com/qchiujunhao/galaxy-cli"
+Issues = "https://github.com/qchiujunhao/galaxy-cli/issues"
+Changelog = "https://github.com/qchiujunhao/galaxy-cli/releases"
 
 [tool.setuptools.packages.find]
 include = ["galaxy_cli*"]

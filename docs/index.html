@@ -3,8 +3,23 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Documentation for galaxy-cli, an agent-friendly command line interface for Galaxy.">
-    <title>galaxy-cli documentation</title>
+    <meta name="description" content="galaxy-cli is a Python CLI for automating Galaxy bioinformatics histories, datasets, tools, workflows, and jobs from the shell. Install with pip or uv.">
+    <title>galaxy-cli: Galaxy bioinformatics command-line client</title>
+    <link rel="canonical" href="https://qchiujunhao.github.io/galaxy-cli/">
+    <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "galaxy-cli",
+  "description": "Python command-line client for automating the Galaxy bioinformatics platform via the Galaxy REST API.",
+  "programmingLanguage": "Python",
+  "runtimePlatform": "Python 3.9+",
+  "codeRepository": "https://github.com/qchiujunhao/galaxy-cli",
+  "downloadUrl": "https://pypi.org/project/galaxy-cli/",
+  "license": "https://opensource.org/license/mit",
+  "applicationCategory": "Bioinformatics software"
+}
+    </script>
     <link rel="stylesheet" href="./assets/styles.css">
   </head>
   <body>
@@ -21,7 +36,7 @@
         <a href="#commands">Commands</a>
         <a href="#release">Release</a>
       </nav>
-      <a class="button ghost" href="https://github.com/qchiujunhao/galaxy-cli">GitHub</a>
+      <a class="button ghost" href="https://github.com/qchiujunhao/galaxy-cli">GitHub repository</a>
     </header>
 
     <main>
@@ -30,8 +45,10 @@
           <p class="eyebrow">Galaxy automation from the shell</p>
           <h1>galaxy-cli</h1>
           <p class="lede">
-            A compact command line interface for Galaxy histories, datasets,
-            collections, tools, workflows, jobs, and release-grade agent runs.
+            A Python Galaxy command-line client for automating
+            <a href="https://galaxyproject.org/">Galaxy Project</a> histories,
+            datasets, collections, tools, workflows, and jobs via the Galaxy
+            REST API.
           </p>
           <div class="actions">
             <a class="button primary" href="#install">Install</a>
@@ -67,7 +84,7 @@ $ galaxy-cli tool run "$MULTIQC_TOOL" \
           </div>
           <div>
             <h3>With pip</h3>
-            <pre><code>python3 -m pip install galaxy-cli</code></pre>
+            <pre><code>pip install galaxy-cli</code></pre>
           </div>
         </div>
       </section>
@@ -306,8 +323,8 @@ galaxy-cli workflow export "$WF" -o workflow.ga</code></pre>
 
     <footer class="site-footer">
       <span>galaxy-cli documentation</span>
-      <a href="https://pypi.org/project/galaxy-cli/">PyPI</a>
-      <a href="https://github.com/qchiujunhao/galaxy-cli">GitHub</a>
+      <a href="https://pypi.org/project/galaxy-cli/">PyPI package</a>
+      <a href="https://github.com/qchiujunhao/galaxy-cli">GitHub repository</a>
       <a href="https://galaxyproject.org/">Galaxy Project</a>
     </footer>
   </body>

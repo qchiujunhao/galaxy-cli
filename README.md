@@ -1,11 +1,28 @@
-# galaxy-cli
+# galaxy-cli — Galaxy bioinformatics command-line client
 
-CLI harness for the [Galaxy](https://galaxyproject.org/) bioinformatics platform.
-It wraps Galaxy's REST API to provide command-line and REPL access to histories,
-datasets, tools, workflows, jobs, and libraries.
+`galaxy-cli` is a Python CLI and REPL for automating the
+[Galaxy](https://galaxyproject.org/) bioinformatics platform from the shell. It
+wraps the Galaxy REST API for histories, datasets, collections, tools,
+workflows, jobs, and libraries.
 
 This project was initially generated with `cli-anything` and then refined into
 the standalone `galaxy-cli` package.
+
+```bash
+pip install galaxy-cli
+```
+
+## What can galaxy-cli do?
+
+`galaxy-cli` is a Galaxy bioinformatics CLI for users who want a Galaxy
+command-line client that works naturally in shell scripts and reproducible
+Galaxy analyses. You can use it to:
+
+- run Galaxy workflows from the command line and submit individual Galaxy tools
+- upload and download datasets
+- create and manage histories and collections
+- inspect jobs, logs, tools, and workflow metadata
+- automate Galaxy workflows for reproducible Galaxy bioinformatics analyses
 
 ## Prerequisites
 
@@ -22,7 +39,7 @@ uv tool install galaxy-cli
 ```
 
 ```bash
-python3 -m pip install galaxy-cli
+pip install galaxy-cli
 ```
 
 For local development from this repository:
