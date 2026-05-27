@@ -41,6 +41,8 @@ only for the specific command you are about to run.
   180 seconds before retrying.
 - If the task already provides exact tool IDs and parameter JSON, submit the
   tool directly. Do not call `tool show` just to re-discover supplied params.
+- Use `tool run --dry-run-payload` or `--save-payload PATH` when you need to
+  inspect the exact Galaxy POST body before submission.
 - Do not download datasets or reports to local files unless the task explicitly
   asks for a local artifact. Reuse Galaxy dataset ids and collection ids
   directly in downstream tool runs.
@@ -101,10 +103,18 @@ galaxy-cli tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.jso
 JOB=$(jq -r '.jobs[0].id' tool_result.json)
 ```
 
+Inspect a payload before submitting:
+
+```bash
+galaxy-cli tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json --dry-run-payload
+galaxy-cli tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json --save-payload payload.json
+```
+
 Check job and output states:
 
 ```bash
 jq '{job:.jobs[0], wait_result, outputs}' tool_result.json
+galaxy-cli job show "$JOB" --full
 ```
 
 `tool run` waits by default. In JSON mode, the `outputs` array includes final
@@ -125,6 +135,9 @@ galaxy-cli dataset download "$DATASET_ID" results/output.dat
 - For dataset or collection inputs nested inside conditionals or repeats, use
   the native JSON object form: `{"src": "hda", "id": "DATASET_ID"}` or
   `{"src": "hdca", "id": "COLLECTION_ID"}`.
+- Flattened nested data keys are also normalized, for example
+  `library|input_1=hda:DATASET_ID` and
+  `select_data|countsFile=hdca:COLLECTION_ID`.
 - Library dataset: `ldda:DATASET_ID`
 - Boolean: `true` or `false`
 - Conditional or repeat params: prefer nested JSON in `--inputs-json`.
@@ -155,6 +168,12 @@ galaxy-cli dataset download "$DATASET_ID" results/output.dat
 ```
 
 ## What To Read Next
+
+Publish/import a completed history when a run needs a shareable result:
+
+```bash
+galaxy-cli history update "$HID" --published true --importable true
+```
 
 - For command syntax, run `galaxy-cli <group> --help` or
   `galaxy-cli <group> <command> --help`.

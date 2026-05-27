@@ -98,6 +98,15 @@ def _progress(message):
     click.echo(message, err=_json_mode_enabled())
 
 
+def _write_json_file(path, payload):
+    try:
+        with open(path, "w") as fh:
+            json.dump(payload, fh, indent=2, default=str)
+            fh.write("\n")
+    except OSError as exc:
+        raise click.UsageError(f"Failed to write JSON file {path!r}: {exc}")
+
+
 def _get_client(ctx):
     """Get or create a GalaxyClient from context."""
     if ctx.obj and ctx.obj.get("client"):
@@ -446,6 +455,48 @@ def history_use(ctx, history_id):
     info = history_mod.show_history(client, history_id)
     result = session_mod.set_current_history(history_id, info["name"])
     _output(result, lambda d: click.echo(f"Now using history: {d['current_history_name']} ({d['current_history_id']})"))
+
+
+@history_group.command("update")
+@click.argument("history_id")
+@click.option("--name", default=None, help="Rename the history")
+@click.option("--annotation", default=None, help="Set the history annotation")
+@click.option("--tag", "tags", multiple=True, help="Set a history tag; repeat for multiple tags")
+@click.option("--published", type=click.BOOL, default=None, help="Set published true/false")
+@click.option("--importable", type=click.BOOL, default=None, help="Set importable true/false")
+@click.pass_context
+def history_update(ctx, history_id, name, annotation, tags, published, importable):
+    """Update history metadata and sharing flags.
+
+    \b
+    Examples:
+      galaxy-cli history update HISTORY_ID --name "paper run"
+      galaxy-cli history update HISTORY_ID --published true --importable true
+    """
+    if (
+        name is None
+        and annotation is None
+        and not tags
+        and published is None
+        and importable is None
+    ):
+        raise click.UsageError(
+            "Provide at least one field to update, such as --name or --published true."
+        )
+    client = _get_client(ctx)
+    result = history_mod.update_history(
+        client,
+        history_id,
+        name=name,
+        annotation=annotation,
+        tags=list(tags) if tags else None,
+        published=published,
+        importable=importable,
+    )
+    _output(
+        result,
+        lambda d: click.echo(f"Updated history {d['id']}: {', '.join(d['updated'])}"),
+    )
 
 
 @history_group.command("export")
@@ -887,8 +938,30 @@ def tool_show(ctx, tool_id, full):
 )
 @click.option("--timeout", default=1800, help="Max wait time in seconds (default: 1800)")
 @click.option("--poll-interval", default=180, help="Seconds between status checks (default: 180)")
+@click.option(
+    "--dry-run-payload",
+    is_flag=True,
+    help="Print the exact Galaxy POST body and do not submit the tool.",
+)
+@click.option(
+    "--save-payload",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    help="Write the exact Galaxy POST body to PATH before submitting.",
+)
 @click.pass_context
-def tool_run(ctx, tool_id, history_id, inputs, inputs_json, wait, timeout, poll_interval):
+def tool_run(
+    ctx,
+    tool_id,
+    history_id,
+    inputs,
+    inputs_json,
+    wait,
+    timeout,
+    poll_interval,
+    dry_run_payload,
+    save_payload,
+):
     """Run a tool with given inputs.
 
     \b
@@ -950,6 +1023,9 @@ def tool_run(ctx, tool_id, history_id, inputs, inputs_json, wait, timeout, poll_
     state/type/size so agents do not need follow-up job/dataset show calls.
     Use --no-wait only when you intentionally want asynchronous submission.
 
+    Use --dry-run-payload or --save-payload PATH to inspect the exact POST body
+    after dataset and collection references have been normalized.
+
     Use `tool show <tool_id>` only when task files do not provide enough input
     names/options to build the submission JSON.
     """
@@ -972,7 +1048,19 @@ def tool_run(ctx, tool_id, history_id, inputs, inputs_json, wait, timeout, poll_
             raise click.UsageError(f"Invalid input format: {inp}. Use key=value")
         k, v = inp.split("=", 1)
         input_dict[k] = v
-    result = tool_mod.run_tool(client, tool_id, hid, inputs=input_dict)
+    payload = None
+    if dry_run_payload or save_payload:
+        payload = tool_mod.build_tool_payload(client, tool_id, hid, inputs=input_dict)
+        if save_payload:
+            _write_json_file(save_payload, payload)
+        if dry_run_payload:
+            _output(payload, lambda d: click.echo(json.dumps(d, indent=2, default=str)))
+            return
+    if payload is None:
+        result = tool_mod.run_tool(client, tool_id, hid, inputs=input_dict)
+    else:
+        result = tool_mod.run_tool(client, tool_id, hid, inputs=input_dict, payload=payload)
+        result["saved_payload"] = save_payload
     if result.get("jobs"):
         job_id = result["jobs"][0]["id"]
         session_mod.track_job(job_id)
@@ -1025,14 +1113,14 @@ def job_list(ctx, history_id, state, tool_id, limit):
 
 @job_group.command("show")
 @click.argument("job_id")
-@click.option("--full", is_flag=True, help="Show compact I/O and params")
+@click.option("--full", is_flag=True, help="Include resolved I/O, params, command line, stdout, and stderr")
 @click.option("--logs", is_flag=True, help="Include command line, stdout, and stderr")
 @click.pass_context
 def job_show(ctx, job_id, full, logs):
     """Show compact job details.
 
-    Default output is token-cheap for agents. Use --logs only when debugging a
-    failed job and the command line/stdout/stderr are required.
+    Default output is token-cheap for agents. Use --full for provenance checks
+    after submission or --logs when only command line/stdout/stderr are needed.
     """
     client = _get_client(ctx)
     result = job_mod.show_job(client, job_id, full=full, logs=logs)
@@ -1042,6 +1130,8 @@ def job_show(ctx, job_id, full, logs):
         click.echo(f"  State: {d['state']}")
         click.echo(f"  Exit code: {d['exit_code']}")
         click.echo(f"  Created: {d['create_time']}")
+        if d.get("command_line"):
+            click.echo(f"  Command: {d['command_line'][:500]}")
         if d.get("stdout"):
             click.echo(f"  Stdout: {d['stdout'][:500]}")
         if d.get("stderr"):

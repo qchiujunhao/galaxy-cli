@@ -93,7 +93,15 @@ def delete_history(client, history_id, purge=False):
     return {"id": history_id, "status": "deleted", "purged": purge}
 
 
-def update_history(client, history_id, name=None, annotation=None, tags=None):
+def update_history(
+    client,
+    history_id,
+    name=None,
+    annotation=None,
+    tags=None,
+    published=None,
+    importable=None,
+):
     """Update a history's metadata."""
     payload = {}
     if name is not None:
@@ -102,8 +110,18 @@ def update_history(client, history_id, name=None, annotation=None, tags=None):
         payload["annotation"] = annotation
     if tags is not None:
         payload["tags"] = tags
+    if published is not None:
+        payload["published"] = published
+    if importable is not None:
+        payload["importable"] = importable
     result = client.put(f"histories/{history_id}", json_data=payload)
-    return {"id": history_id, "updated": list(payload.keys()), "name": result.get("name", "")}
+    return {
+        "id": history_id,
+        "updated": list(payload.keys()),
+        "name": result.get("name", ""),
+        "published": result.get("published", published),
+        "importable": result.get("importable", importable),
+    }
 
 
 def export_history(client, history_id):

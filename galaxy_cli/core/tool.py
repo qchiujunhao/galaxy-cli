@@ -237,7 +237,14 @@ def show_tool(client, tool_id, full=False):
 
 
 def _collect_input_types(inputs):
-    """Map flat input paths to their Galaxy input types."""
+    """Map flattened Galaxy input paths to their terminal input types.
+
+    Galaxy form schemas nest data inputs under conditionals, repeats, and
+    sections, while the tool execution endpoint accepts flattened keys such as
+    ``library|input_1`` and ``results_0|software_cond|input``.  This collector
+    walks the normalized ``tool show`` schema recursively so those terminal
+    data/data_collection nodes can still be recognized after flattening.
+    """
     input_types = {}
 
     def _add(inp, prefix=""):
@@ -325,16 +332,8 @@ def _flatten_nested_inputs(inputs):
     return flat
 
 
-def run_tool(client, tool_id, history_id, inputs=None):
-    """Run a tool with given inputs in a history.
-
-    Args:
-        client: GalaxyClient instance.
-        tool_id: Tool identifier.
-        history_id: Target history for outputs. Inputs may be a flat dict
-            using Galaxy's pipe-encoded keys (``operations_0|op_name``) or
-            a nested dict/list structure that will be flattened automatically.
-    """
+def build_tool_payload(client, tool_id, history_id, inputs=None):
+    """Build the exact POST body for a Galaxy tool execution."""
     flat_inputs = _flatten_nested_inputs(inputs or {})
     tool_info = show_tool(client, tool_id)
     input_types = _collect_input_types(tool_info.get("inputs", []))
@@ -342,19 +341,21 @@ def run_tool(client, tool_id, history_id, inputs=None):
         key: _normalize_tool_input(key, value, input_types)
         for key, value in flat_inputs.items()
     }
-
-    payload = {
+    return {
         "tool_id": tool_id,
         "history_id": history_id,
         "inputs": normalized_inputs,
     }
+
+
+def _submit_tool_payload(client, payload):
     result = client.post("tools", json_data=payload)
     jobs = result.get("jobs", [])
     outputs = result.get("outputs", [])
     output_collections = result.get("output_collections", [])
     return {
-        "tool_id": tool_id,
-        "history_id": history_id,
+        "tool_id": payload.get("tool_id", ""),
+        "history_id": payload.get("history_id", ""),
         "jobs": [
             {
                 "id": j.get("id", ""),
@@ -382,6 +383,22 @@ def run_tool(client, tool_id, history_id, inputs=None):
             for o in output_collections
         ],
     }
+
+
+def run_tool(client, tool_id, history_id, inputs=None, payload=None):
+    """Run a tool with given inputs in a history.
+
+    Args:
+        client: GalaxyClient instance.
+        tool_id: Tool identifier.
+        history_id: Target history for outputs. Inputs may be a flat dict
+            using Galaxy's pipe-encoded keys (``operations_0|op_name``) or
+            a nested dict/list structure that will be flattened automatically.
+        payload: Pre-built tool execution payload from ``build_tool_payload``.
+    """
+    if payload is None:
+        payload = build_tool_payload(client, tool_id, history_id, inputs=inputs)
+    return _submit_tool_payload(client, payload)
 
 
 def refresh_output_details(client, history_id, outputs):

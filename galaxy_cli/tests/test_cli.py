@@ -271,6 +271,119 @@ class TestCli:
         assert data["jobs"][0]["id"] == "job-1"
         assert [output["id"] for output in data["outputs"]] == ["html-1", "raw-1"]
 
+    def test_tool_run_dry_run_payload_outputs_post_body(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        client = object()
+        payload = {
+            "tool_id": "hisat2",
+            "history_id": "hist-1",
+            "inputs": {"library|input_1": {"src": "hda", "id": "dataset-1"}},
+        }
+
+        with patch("galaxy_cli.cli._get_client", return_value=client), \
+             patch("galaxy_cli.cli._require_history", return_value="hist-1"), \
+             patch("galaxy_cli.cli.tool_mod.build_tool_payload", return_value=payload) as build, \
+             patch("galaxy_cli.cli.tool_mod.run_tool") as run_tool:
+            result = runner.invoke(
+                cli,
+                ["--json", "tool", "run", "hisat2", "--dry-run-payload"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == payload
+        build.assert_called_once_with(client, "hisat2", "hist-1", inputs={})
+        run_tool.assert_not_called()
+
+    def test_tool_run_save_payload_writes_post_body_and_submits(self, tmp_path):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        client = object()
+        payload_path = tmp_path / "payload.json"
+        payload = {
+            "tool_id": "hisat2",
+            "history_id": "hist-1",
+            "inputs": {"library|input_1": {"src": "hda", "id": "dataset-1"}},
+        }
+        run_result = {
+            "tool_id": "hisat2",
+            "history_id": "hist-1",
+            "jobs": [],
+            "outputs": [],
+        }
+
+        with patch("galaxy_cli.cli._get_client", return_value=client), \
+             patch("galaxy_cli.cli._require_history", return_value="hist-1"), \
+             patch("galaxy_cli.cli.tool_mod.build_tool_payload", return_value=payload), \
+             patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result) as run_tool:
+            result = runner.invoke(
+                cli,
+                [
+                    "--json",
+                    "tool",
+                    "run",
+                    "hisat2",
+                    "--save-payload",
+                    str(payload_path),
+                    "--no-wait",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(payload_path.read_text()) == payload
+        data = json.loads(result.output)
+        assert data["saved_payload"] == str(payload_path)
+        run_tool.assert_called_once_with(
+            client,
+            "hisat2",
+            "hist-1",
+            inputs={},
+            payload=payload,
+        )
+
+    def test_history_update_published_importable_cli(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        result_payload = {
+            "id": "hist-1",
+            "updated": ["published", "importable"],
+            "name": "",
+            "published": True,
+            "importable": True,
+        }
+        client = object()
+
+        with patch("galaxy_cli.cli._get_client", return_value=client), \
+             patch("galaxy_cli.cli.history_mod.update_history", return_value=result_payload) as update:
+            result = runner.invoke(
+                cli,
+                [
+                    "--json",
+                    "history",
+                    "update",
+                    "hist-1",
+                    "--published",
+                    "true",
+                    "--importable",
+                    "true",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["published"] is True
+        update.assert_called_once_with(
+            client,
+            "hist-1",
+            name=None,
+            annotation=None,
+            tags=None,
+            published=True,
+            importable=True,
+        )
+
     def test_invocation_wait_keeps_stdout_json_clean(self):
         from galaxy_cli.cli import cli
 

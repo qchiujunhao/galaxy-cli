@@ -230,6 +230,20 @@ class TestHistory:
         assert "name" in result["updated"]
         assert result["name"] == "Renamed"
 
+    def test_update_history_published_importable(self):
+        from galaxy_cli.core.history import update_history
+
+        client = self._mock_client()
+        client.put.return_value = {"id": "h1", "published": True, "importable": True}
+        result = update_history(client, "h1", published=True, importable=True)
+
+        client.put.assert_called_once_with(
+            "histories/h1",
+            json_data={"published": True, "importable": True},
+        )
+        assert result["published"] is True
+        assert result["importable"] is True
+
     def test_export_history(self):
         from galaxy_cli.core.history import export_history
 
@@ -857,6 +871,209 @@ class TestTool:
             "id": collection_id,
         }
 
+    def test_run_tool_wraps_flattened_conditional_dataset_input(self):
+        from galaxy_cli.core.tool import run_tool
+
+        client = self._mock_client()
+        dataset_id = "f9cad7b01a4721358dba0ff950c535fa"
+        client.get.return_value = {
+            "id": "hisat2",
+            "name": "HISAT2",
+            "version": "2.2.2+galaxy0",
+            "description": "",
+            "inputs": [
+                {
+                    "name": "library",
+                    "label": "Input data",
+                    "type": "conditional",
+                    "test_param": {
+                        "name": "type",
+                        "label": "Library type",
+                        "type": "select",
+                        "options": [["Single-end", "single", False]],
+                    },
+                    "cases": [
+                        {
+                            "value": "single",
+                            "inputs": [
+                                {
+                                    "name": "input_1",
+                                    "label": "Reads",
+                                    "type": "data",
+                                    "extensions": ["fastqsanger"],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+            "outputs": [],
+        }
+        client.post.return_value = {"jobs": [], "outputs": []}
+
+        run_tool(
+            client,
+            "hisat2",
+            "h1",
+            inputs={"library|type": "single", "library|input_1": f"hda:{dataset_id}"},
+        )
+
+        _, kwargs = client.post.call_args
+        submitted = kwargs["json_data"]["inputs"]
+        assert submitted["library|type"] == "single"
+        assert submitted["library|input_1"] == {"src": "hda", "id": dataset_id}
+
+    def test_run_tool_wraps_flattened_conditional_collection_and_dataset_inputs(self):
+        from galaxy_cli.core.tool import run_tool
+
+        client = self._mock_client()
+        collection_id = "790b3f7be925056d"
+        dataset_id = "f9cad7b01a4721358dba0ff950c535fa"
+        client.get.return_value = {
+            "id": "deseq2",
+            "name": "DESeq2",
+            "version": "2.11.40.8",
+            "description": "",
+            "inputs": [
+                {
+                    "name": "select_data",
+                    "label": "Input mode",
+                    "type": "conditional",
+                    "test_param": {
+                        "name": "input_type",
+                        "label": "Input type",
+                        "type": "select",
+                        "options": [["Sample sheet", "sample_sheet", False]],
+                    },
+                    "cases": [
+                        {
+                            "value": "sample_sheet",
+                            "inputs": [
+                                {
+                                    "name": "countsFile",
+                                    "label": "Count file collection",
+                                    "type": "data_collection",
+                                    "collection_type": "list",
+                                    "extensions": ["tabular"],
+                                },
+                                {
+                                    "name": "sample_sheet",
+                                    "label": "Sample sheet",
+                                    "type": "data",
+                                    "extensions": ["tabular"],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+            "outputs": [],
+        }
+        client.post.return_value = {"jobs": [], "outputs": []}
+
+        run_tool(
+            client,
+            "deseq2",
+            "h1",
+            inputs={
+                "select_data|countsFile": f"hdca:{collection_id}",
+                "select_data|sample_sheet": f"hda:{dataset_id}",
+            },
+        )
+
+        _, kwargs = client.post.call_args
+        submitted = kwargs["json_data"]["inputs"]
+        assert submitted["select_data|countsFile"] == {
+            "src": "hdca",
+            "id": collection_id,
+        }
+        assert submitted["select_data|sample_sheet"] == {"src": "hda", "id": dataset_id}
+
+    def test_run_tool_preserves_explicit_json_refs_flat_and_nested(self):
+        from galaxy_cli.core.tool import run_tool
+
+        client = self._mock_client()
+        dataset_ref = {"src": "hda", "id": "f9cad7b01a4721358dba0ff950c535fa"}
+        collection_ref = {"src": "hdca", "id": "790b3f7be925056d"}
+        client.get.return_value = {
+            "id": "section_tool",
+            "name": "Section Tool",
+            "version": "1.0",
+            "description": "",
+            "inputs": [
+                {"name": "flat_data", "label": "Data", "type": "data"},
+                {
+                    "name": "advanced",
+                    "label": "Advanced",
+                    "type": "section",
+                    "inputs": [
+                        {
+                            "name": "reads",
+                            "label": "Reads",
+                            "type": "data_collection",
+                            "collection_type": "list",
+                        },
+                    ],
+                },
+            ],
+            "outputs": [],
+        }
+        client.post.return_value = {"jobs": [], "outputs": []}
+
+        run_tool(
+            client,
+            "section_tool",
+            "h1",
+            inputs={"flat_data": dataset_ref, "advanced": {"reads": collection_ref}},
+        )
+
+        _, kwargs = client.post.call_args
+        submitted = kwargs["json_data"]["inputs"]
+        assert submitted["flat_data"] == dataset_ref
+        assert submitted["advanced|reads"] == collection_ref
+
+    def test_run_tool_wraps_section_dataset_input(self):
+        from galaxy_cli.core.tool import run_tool
+
+        client = self._mock_client()
+        dataset_id = "f9cad7b01a4721358dba0ff950c535fa"
+        client.get.return_value = {
+            "id": "section_tool",
+            "name": "Section Tool",
+            "version": "1.0",
+            "description": "",
+            "inputs": [
+                {
+                    "name": "advanced",
+                    "label": "Advanced",
+                    "type": "section",
+                    "inputs": [
+                        {
+                            "name": "reads",
+                            "label": "Reads",
+                            "type": "data",
+                            "extensions": ["fastqsanger"],
+                        },
+                    ],
+                },
+            ],
+            "outputs": [],
+        }
+        client.post.return_value = {"jobs": [], "outputs": []}
+
+        run_tool(
+            client,
+            "section_tool",
+            "h1",
+            inputs={"advanced": {"reads": f"hda:{dataset_id}"}},
+        )
+
+        _, kwargs = client.post.call_args
+        assert kwargs["json_data"]["inputs"]["advanced|reads"] == {
+            "src": "hda",
+            "id": dataset_id,
+        }
+
     def test_run_tool_supports_multiqc_fastqc_nested_dataset_inputs(self):
         from galaxy_cli.core.tool import run_tool
 
@@ -1100,7 +1317,7 @@ class TestJob:
         client.get.return_value = {
             "id": "j1", "tool_id": "fastqc", "state": "ok",
             "create_time": "", "update_time": "", "exit_code": 0,
-            "history_id": "h1", "command_line": "", "tool_stdout": "", "tool_stderr": "",
+            "history_id": "h1", "command_line": "fastqc input.fastq", "tool_stdout": "Done", "tool_stderr": "",
             "inputs": {"input_file": {"id": "d1"}},
             "outputs": {"html_file": {"id": "d2"}},
             "params": {"input_file": "d1"},
@@ -1108,7 +1325,8 @@ class TestJob:
         result = show_job(client, "j1", full=True)
         assert "inputs" in result
         assert "outputs" in result
-        assert "command_line" not in result
+        assert result["command_line"] == "fastqc input.fastq"
+        assert result["stdout"] == "Done"
 
     def test_show_job_logs_are_explicit(self):
         from galaxy_cli.core.job import show_job

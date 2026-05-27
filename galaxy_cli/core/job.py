@@ -3,6 +3,13 @@
 import time
 
 
+def _first_present(mapping, keys, default=""):
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            return mapping[key]
+    return default
+
+
 def list_jobs(client, history_id=None, state=None, tool_id=None, limit=50, offset=0):
     """List jobs, optionally filtered."""
     params = {"limit": limit, "offset": offset, "order_by": "update_time"}
@@ -47,10 +54,10 @@ def show_job(client, job_id, full=False, logs=False):
         result["inputs"] = info.get("inputs", {})
         result["outputs"] = info.get("outputs", {})
         result["params"] = info.get("params", {})
-    if logs:
-        result["command_line"] = info.get("command_line", "")
-        result["stdout"] = info.get("tool_stdout", "")
-        result["stderr"] = info.get("tool_stderr", "")
+    if full or logs:
+        result["command_line"] = _first_present(info, ("command_line", "command"))
+        result["stdout"] = _first_present(info, ("tool_stdout", "stdout"))
+        result["stderr"] = _first_present(info, ("tool_stderr", "stderr"))
     return result
 
 
