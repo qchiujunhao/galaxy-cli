@@ -37,8 +37,8 @@ only for the specific command you are about to run.
 - Prefer `--inputs-json FILE` for tool runs with conditionals, repeats, or more
   than two parameters.
 - Store large command output in files and extract only needed fields with `jq`.
-- If Galaxy returns `429`, `502`, `503`, `504`, or a server-busy response, sleep
-  180 seconds before retrying.
+- Safe GET calls retry `429`, `502`, `503`, and `504` automatically. Do not
+  blindly retry `tool run` or `dataset upload` after an unknown submission state.
 - If the task already provides exact tool IDs and parameter JSON, submit the
   tool directly. Do not call `tool show` just to re-discover supplied params.
 - Use `tool run --dry-run-payload` or `--save-payload PATH` when you need to
@@ -77,6 +77,15 @@ REV=$(galaxy-cli dataset upload inputs/reads_2.fastq.gz --history-id "$HID" --fi
 
 `dataset upload` waits by default. Do not create collections from uploaded
 datasets until the returned upload JSON reports `state: "ok"`.
+For large files, set an upload/request timeout explicitly:
+
+```bash
+DATASET=$(galaxy-cli dataset upload matrix.tsv --history-id "$HID" --file-type tabular --upload-timeout 7200 --timeout 7200 | jq -r .id)
+```
+
+`--timeout` is the upload job wait timeout and also the HTTP upload timeout
+when `--upload-timeout` is not set. `GALAXY_CLI_REQUEST_TIMEOUT` controls
+regular API request reads, and `GALAXY_CLI_UPLOAD_TIMEOUT` controls upload POSTs.
 
 Create collections:
 
@@ -103,6 +112,17 @@ galaxy-cli tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.jso
 JOB=$(jq -r '.jobs[0].id' tool_result.json)
 ```
 
+Search for tools with bounded output:
+
+```bash
+galaxy-cli tool search "fastqc" --limit 5
+galaxy-cli tool search "machine learning" --limit 10 --cache
+galaxy-cli tool search "machine learning" --limit 10 --refresh-cache
+```
+
+Default `tool search` output is limited and does not resolve every string-only
+hit. Add `--resolve` only when the search result lacks enough detail.
+
 Inspect a payload before submitting:
 
 ```bash
@@ -121,6 +141,15 @@ galaxy-cli job show "$JOB" --full
 dataset or dataset-collection state/type/size metadata after wait. Do not call
 `job show --full`, `dataset show`, or `collection show` for those outputs
 unless a needed field is missing.
+
+Preview wide datasets compactly:
+
+```bash
+galaxy-cli dataset peek "$DATASET_ID" --history-id "$HID" --lines 5 --max-fields 20 --max-chars-per-line 500
+```
+
+`dataset peek` returns compact `lines` plus per-row `field_count` and first
+fields under `rows`, so broad expression matrices do not flood context.
 
 Download outputs only when the task explicitly asks for local artifacts:
 

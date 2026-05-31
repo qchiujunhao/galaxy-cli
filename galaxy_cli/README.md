@@ -41,6 +41,19 @@ which galaxy-cli
 galaxy-cli --version
 ```
 
+## AI Agent Skill
+
+Install the bundled `galaxy-cli` skill after installing the package:
+
+```bash
+galaxy-cli skill install --agent codex
+galaxy-cli skill install --agent claude
+```
+
+This copies the packaged skill to `~/.codex/skills/galaxy-cli/SKILL.md` or
+`~/.claude/skills/galaxy-cli/SKILL.md`. Use `galaxy-cli skill path` to inspect
+the packaged source, or `--target-dir` to install into another skills directory.
+
 ## Configuration
 
 Set your Galaxy server URL and API key:
@@ -75,9 +88,10 @@ galaxy-cli history create "My Analysis"
 
 # Upload a file
 galaxy-cli dataset upload data.fastq --history-id abc123
+galaxy-cli dataset upload matrix.tsv --history-id abc123 --upload-timeout 7200
 
 # Search for tools
-galaxy-cli tool search "bowtie"
+galaxy-cli tool search "bowtie" --limit 5
 
 # Run a tool
 galaxy-cli tool run toolshed.g2.bx.psu.edu/repos/.../bowtie2 \

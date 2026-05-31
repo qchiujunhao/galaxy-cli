@@ -11,6 +11,13 @@ def _mask(key):
     return f"***...{key[-4:]}" if len(key) >= 4 else "***"
 
 
+def _mask_email(email):
+    if not email or "@" not in email:
+        return email or ""
+    local, domain = email.split("@", 1)
+    return f"{local[:1]}***@{domain}" if local else f"***@{domain}"
+
+
 def set_url(url):
     """Save the Galaxy server URL (legacy top-level config)."""
     GalaxyClient.save_config("url", url.rstrip("/"))
@@ -65,12 +72,16 @@ def test_connection(client):
     """Test the connection to Galaxy server."""
     version = client.get_version()
     user = client.whoami()
+    username = user.get("username", "unknown")
+    if "@" in username:
+        username = _mask_email(username)
     return {
         "status": "connected",
         "galaxy_version": version.get("version_major", "unknown"),
         "extra": version.get("version_minor", ""),
-        "user": user.get("username", "unknown"),
-        "email": user.get("email", "unknown"),
+        "user": username,
+        "email": _mask_email(user.get("email", "")),
+        "email_redacted": bool(user.get("email")),
         "user_id": user.get("id", "unknown"),
     }
 

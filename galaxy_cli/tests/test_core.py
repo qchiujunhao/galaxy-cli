@@ -120,6 +120,79 @@ class TestConfig:
         assert exc.value.category == "connection"
         assert "modern Python build" in exc.value.suggestion
 
+    def test_request_and_upload_timeouts_from_env(self):
+        from galaxy_cli.utils.galaxy_backend import GalaxyClient
+
+        env = dict(os.environ)
+        env.update({
+            "GALAXY_URL": "https://galaxy.example.org",
+            "GALAXY_API_KEY": "testkey123",
+            "GALAXY_CLI_REQUEST_TIMEOUT": "12",
+            "GALAXY_CLI_UPLOAD_TIMEOUT": "7200",
+        })
+        with patch.dict(os.environ, env, clear=True):
+            client = GalaxyClient()
+
+        assert client.request_timeout == 12.0
+        assert client.upload_timeout == 7200.0
+
+    def test_get_uses_connect_and_request_timeout_tuple(self):
+        from galaxy_cli.utils.galaxy_backend import GalaxyClient
+
+        client = GalaxyClient(
+            url="https://galaxy.example.org",
+            api_key="abc123",
+            request_timeout=17,
+            connect_timeout=3,
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {"version_major": "24.1"}
+
+        with patch("galaxy_cli.utils.galaxy_backend.requests.request", return_value=resp) as mock_request:
+            result = client.get_version()
+
+        assert result["version_major"] == "24.1"
+        assert mock_request.call_args.kwargs["timeout"] == (3.0, 17.0)
+
+    def test_get_retries_retryable_status_and_respects_retry_after(self):
+        from galaxy_cli.utils.galaxy_backend import GalaxyClient
+
+        client = GalaxyClient(url="https://galaxy.example.org", api_key="abc123", max_get_retries=2)
+        busy = MagicMock()
+        busy.status_code = 429
+        busy.headers = {"Retry-After": "2"}
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.raise_for_status.return_value = None
+        ok.json.return_value = {"version_major": "24.1"}
+
+        with patch("galaxy_cli.utils.galaxy_backend.requests.request", side_effect=[busy, ok]) as mock_request, \
+             patch("galaxy_cli.utils.galaxy_backend.time.sleep") as sleep:
+            result = client.get_version()
+
+        assert result["version_major"] == "24.1"
+        assert mock_request.call_count == 2
+        sleep.assert_called_once_with(2.0)
+
+    def test_post_is_not_retried_after_server_error(self):
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError, GalaxyClient
+
+        client = GalaxyClient(url="https://galaxy.example.org", api_key="abc123", max_get_retries=3)
+        resp = MagicMock()
+        resp.status_code = 503
+        resp.headers = {}
+        resp.raise_for_status.side_effect = requests.HTTPError("busy")
+        resp.json.return_value = {"err_msg": "server busy"}
+
+        with patch("galaxy_cli.utils.galaxy_backend.requests.request", return_value=resp) as mock_request:
+            with pytest.raises(GalaxyBackendError) as exc:
+                client.post("tools", json_data={"tool_id": "upload1"})
+
+        assert exc.value.category == "server_error"
+        assert mock_request.call_count == 1
+
 
 # ── History Tests ────────────────────────────────────────────────────────
 
@@ -304,6 +377,26 @@ class TestDataset:
         assert result["file_size"] == 123
         assert result["wait_results"][0]["state"] == "ok"
 
+    def test_upload_dataset_passes_upload_timeout(self):
+        from galaxy_cli.core.dataset import upload_dataset
+
+        client = self._mock_client()
+        client.upload_file.return_value = {
+            "jobs": [],
+            "outputs": [{"id": "d1", "name": "matrix.tsv", "state": "queued", "extension": "tabular"}],
+        }
+
+        result = upload_dataset(client, "h1", "/tmp/matrix.tsv", upload_timeout=7200)
+
+        assert result["id"] == "d1"
+        client.upload_file.assert_called_once_with(
+            "/tmp/matrix.tsv",
+            "h1",
+            file_type="auto",
+            dbkey="?",
+            upload_timeout=7200,
+        )
+
     def test_show_dataset(self):
         from galaxy_cli.core.dataset import show_dataset
 
@@ -354,7 +447,7 @@ class TestDataset:
         client = self._mock_client()
         out_file = tmp_path / "output.txt"
         client.download_dataset.return_value = {"output": str(out_file), "size": 100}
-        result = download_dataset(client, "d1", str(out_file))
+        result = download_dataset(client, "d1", str(out_file), history_id="h1")
         assert result["output"] == str(out_file)
         assert result["size"] == 100
 
@@ -366,6 +459,7 @@ class TestDataset:
         result = peek_dataset(client, "d1", lines=3)
         assert len(result["lines"]) == 3
         assert result["lines"][0] == "line1"
+        assert result["rows"][0]["text"] == "line1"
 
     def test_peek_dataset_supports_data_list_payload(self):
         from galaxy_cli.core.dataset import peek_dataset
@@ -374,6 +468,30 @@ class TestDataset:
         client.get.return_value = {"data": ["line1\n", "line2\n", "line3\n", "line4\n"]}
         result = peek_dataset(client, "d1", lines=3)
         assert result["lines"] == ["line1", "line2", "line3"]
+
+    def test_peek_dataset_compacts_wide_delimited_rows(self):
+        from galaxy_cli.core.dataset import peek_dataset
+
+        client = self._mock_client()
+        client.get.return_value = {"peek": "gene\ts1\ts2\ts3\ts4\nA\t1\t2\t3\t4"}
+
+        result = peek_dataset(client, "d1", lines=1, max_fields=3, max_chars_per_line=100)
+
+        assert result["lines"] == ["gene\ts1\ts2"]
+        assert result["rows"][0]["field_count"] == 5
+        assert result["rows"][0]["fields"] == ["gene", "s1", "s2"]
+        assert result["rows"][0]["truncated_fields"] is True
+
+    def test_peek_dataset_truncates_long_lines(self):
+        from galaxy_cli.core.dataset import peek_dataset
+
+        client = self._mock_client()
+        client.get.return_value = {"peek": "abcdefghijklmnopqrstuvwxyz"}
+
+        result = peek_dataset(client, "d1", lines=1, max_chars_per_line=5)
+
+        assert result["lines"] == ["abcde"]
+        assert result["rows"][0]["truncated_chars"] is True
 
     def test_peek_dataset_supports_ck_data_fallback(self):
         from galaxy_cli.core.dataset import peek_dataset
@@ -610,6 +728,66 @@ class TestTool:
         ]
         result = search_tools(client, "bowtie")
         assert len(result) == 1
+
+    def test_search_tools_does_not_resolve_string_hits_by_default(self):
+        from galaxy_cli.core.tool import search_tools
+
+        client = self._mock_client()
+        client.get.return_value = ["tool_a", "tool_b", "tool_c"]
+
+        result = search_tools(client, "tool", limit=2)
+
+        assert [tool["id"] for tool in result] == ["tool_a", "tool_b"]
+        client.get.assert_called_once_with("tools", params={"in_panel": False, "q": "tool"})
+
+    def test_search_tools_resolves_string_hits_when_requested(self):
+        from galaxy_cli.core.tool import search_tools
+
+        client = self._mock_client()
+        client.get.side_effect = [
+            ["tool_a", "tool_b"],
+            {"id": "tool_a", "name": "Tool A", "version": "1.0", "description": "first"},
+        ]
+
+        result = search_tools(client, "tool", limit=1, resolve=True)
+
+        assert result == [
+            {
+                "id": "tool_a",
+                "name": "Tool A",
+                "version": "1.0",
+                "description": "first",
+                "section": "",
+            }
+        ]
+        assert client.get.call_args_list == [
+            (("tools",), {"params": {"in_panel": False, "q": "tool"}}),
+            (("tools/tool_a",), {}),
+        ]
+
+    def test_search_tools_cache_reuses_cached_tool_list(self, tmp_path, monkeypatch):
+        from galaxy_cli.core import tool as tool_mod
+        from galaxy_cli.core.tool import search_tools
+
+        monkeypatch.setattr(tool_mod, "DEFAULT_CONFIG_DIR", tmp_path)
+        client = self._mock_client()
+        client.url = "https://galaxy.example.org/"
+        client.get.return_value = [
+            {
+                "id": "sklearn_train_regression",
+                "name": "Tabular Machine Learning Trainer",
+                "version": "1.0",
+                "description": "Train machine learning models",
+                "panel_section_name": "Machine Learning",
+            },
+        ]
+
+        first = search_tools(client, "machine learning", use_cache=True)
+        second = search_tools(client, "machine learning", use_cache=True)
+
+        assert first[0]["id"] == "sklearn_train_regression"
+        assert second[0]["id"] == "sklearn_train_regression"
+        client.get.assert_called_once_with("tools", params={"in_panel": False})
 
     def test_search_tools_keyword_fallback(self):
         from galaxy_cli.core.tool import search_tools
@@ -1475,6 +1653,73 @@ class TestWorkflow:
         assert result["status"] == "deleted"
 
 
+# ── Skill Tests ──────────────────────────────────────────────────────────
+
+class TestSkill:
+    def test_skill_info_points_to_packaged_skill(self):
+        from galaxy_cli.core.skill import read_skill, skill_info
+
+        info = skill_info()
+
+        assert info["name"] == "galaxy-cli"
+        assert info["exists"] is True
+        assert info["path"].endswith("SKILL.md")
+        assert "Use this skill when the task requires Galaxy operations" in read_skill()
+
+    def test_install_skill_to_target_dir(self, tmp_path):
+        from galaxy_cli.core.skill import install_skill, read_skill
+
+        result = install_skill(agent="codex", target_dir=tmp_path)
+        destination = tmp_path / "galaxy-cli" / "SKILL.md"
+
+        assert result["status"] == "installed"
+        assert result["destination"] == str(destination)
+        assert destination.read_text() == read_skill()
+
+    def test_install_skill_is_idempotent_when_content_matches(self, tmp_path):
+        from galaxy_cli.core.skill import install_skill
+
+        install_skill(agent="codex", target_dir=tmp_path)
+        result = install_skill(agent="codex", target_dir=tmp_path)
+
+        assert result["status"] == "already_installed"
+
+    def test_install_skill_refuses_overwrite_without_force(self, tmp_path):
+        from galaxy_cli.core.skill import install_skill
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+        destination = tmp_path / "galaxy-cli" / "SKILL.md"
+        destination.parent.mkdir()
+        destination.write_text("local edit\n")
+
+        with pytest.raises(GalaxyBackendError) as exc:
+            install_skill(agent="codex", target_dir=tmp_path)
+
+        assert exc.value.category == "file_exists"
+        assert "--force" in exc.value.suggestion
+
+    def test_install_skill_force_overwrites_existing_file(self, tmp_path):
+        from galaxy_cli.core.skill import install_skill, read_skill
+
+        destination = tmp_path / "galaxy-cli" / "SKILL.md"
+        destination.parent.mkdir()
+        destination.write_text("local edit\n")
+
+        result = install_skill(agent="claude", target_dir=tmp_path, force=True)
+
+        assert result["status"] == "updated"
+        assert destination.read_text() == read_skill()
+
+    def test_default_skills_dir_uses_agent_home_env(self, tmp_path, monkeypatch):
+        from galaxy_cli.core.skill import default_skills_dir
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+        monkeypatch.setenv("CLAUDE_HOME", str(tmp_path / "claude-home"))
+
+        assert default_skills_dir("codex") == tmp_path / "codex-home" / "skills"
+        assert default_skills_dir("claude") == tmp_path / "claude-home" / "skills"
+
+
 # ── Invocation Tests ─────────────────────────────────────────────────────
 
 class TestInvocation:
@@ -1831,6 +2076,7 @@ class TestGalaxyBackend:
 
         def fake_post(*args, **kwargs):
             observed["inputs"] = json.loads(kwargs["data"]["inputs"])
+            observed["timeout"] = kwargs["timeout"]
             resp = MagicMock()
             resp.raise_for_status.return_value = None
             resp.status_code = 200
@@ -1842,6 +2088,28 @@ class TestGalaxyBackend:
 
         assert "files_0|space_to_tab" not in observed["inputs"]
         assert observed["inputs"]["files_0|to_posix_lines"] is False
+        assert observed["timeout"] == (30.0, 300.0)
+
+    def test_upload_file_accepts_explicit_upload_timeout(self, tmp_path):
+        from galaxy_cli.utils.galaxy_backend import GalaxyClient
+
+        upload_file = tmp_path / "matrix.tsv"
+        upload_file.write_text("gene\ts1\nA\t1\n")
+        client = GalaxyClient(url="https://galaxy.example.org", api_key="testkey123")
+        observed = {}
+
+        def fake_post(*args, **kwargs):
+            observed["timeout"] = kwargs["timeout"]
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.status_code = 200
+            resp.json.return_value = {"outputs": []}
+            return resp
+
+        with patch("galaxy_cli.utils.galaxy_backend.requests.post", side_effect=fake_post):
+            client.upload_file(str(upload_file), "h1", upload_timeout=7200)
+
+        assert observed["timeout"] == (30.0, 7200.0)
 
     def test_upload_file_closes_handle_on_request_error(self, tmp_path):
         from galaxy_cli.utils.galaxy_backend import (
@@ -1866,4 +2134,4 @@ class TestGalaxyBackend:
         assert observed["closed_during_request"] is False
         assert exc.value.category == "timeout"
         assert exc.value.exit_code == EXIT_TIMEOUT
-        assert "Increase timeout" in exc.value.suggestion
+        assert "Increase upload timeout" in exc.value.suggestion

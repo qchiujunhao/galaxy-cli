@@ -149,6 +149,269 @@ class TestCli:
         assert ctx.obj["client"] == "client-1"
         client_cls.assert_called_once_with(url="https://galaxy.example.org", api_key="abc123", profile=None)
 
+    def test_get_client_passes_request_timeout_when_configured(self):
+        from galaxy_cli.cli import _get_client
+
+        ctx = SimpleNamespace(obj={
+            "url": "https://galaxy.example.org",
+            "api_key": "abc123",
+            "profile": None,
+            "request_timeout": 120,
+        })
+
+        with patch("galaxy_cli.cli.GalaxyClient", return_value="client") as client_cls:
+            client = _get_client(ctx)
+
+        assert client == "client"
+        client_cls.assert_called_once_with(
+            url="https://galaxy.example.org",
+            api_key="abc123",
+            profile=None,
+            request_timeout=120,
+        )
+
+    def test_dataset_upload_timeout_also_sets_upload_timeout(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        uploaded = {"id": "d1", "name": "matrix.tsv", "state": "ok"}
+
+        with patch("galaxy_cli.cli._get_client", return_value=object()) as get_client, \
+             patch("galaxy_cli.cli.dataset_mod.upload_dataset", return_value=uploaded) as upload, \
+             patch("galaxy_cli.cli.session_mod.track_dataset"):
+            result = runner.invoke(
+                cli,
+                [
+                    "--json",
+                    "dataset",
+                    "upload",
+                    "matrix.tsv",
+                    "--history-id",
+                    "hist-1",
+                    "--timeout",
+                    "7200",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        get_client.assert_called_once()
+        assert json.loads(result.output)["id"] == "d1"
+        assert upload.call_args.kwargs["timeout"] == 7200
+        assert upload.call_args.kwargs["upload_timeout"] == 7200
+
+    def test_dataset_upload_explicit_upload_timeout_wins(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        uploaded = {"id": "d1", "name": "matrix.tsv", "state": "ok"}
+
+        with patch("galaxy_cli.cli._get_client", return_value=object()), \
+             patch("galaxy_cli.cli.dataset_mod.upload_dataset", return_value=uploaded) as upload, \
+             patch("galaxy_cli.cli.session_mod.track_dataset"):
+            result = runner.invoke(
+                cli,
+                [
+                    "--json",
+                    "dataset",
+                    "upload",
+                    "matrix.tsv",
+                    "--history-id",
+                    "hist-1",
+                    "--timeout",
+                    "60",
+                    "--upload-timeout",
+                    "7200",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert upload.call_args.kwargs["timeout"] == 60
+        assert upload.call_args.kwargs["upload_timeout"] == 7200.0
+
+    def test_dataset_peek_accepts_history_id_and_compaction_options(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        preview = {"id": "d1", "lines": ["a\tb"], "rows": [], "total_shown": 1}
+
+        with patch("galaxy_cli.cli._get_client", return_value=object()), \
+             patch("galaxy_cli.cli.dataset_mod.peek_dataset", return_value=preview) as peek:
+            result = runner.invoke(
+                cli,
+                [
+                    "--json",
+                    "dataset",
+                    "peek",
+                    "d1",
+                    "--history-id",
+                    "hist-1",
+                    "--lines",
+                    "1",
+                    "--max-fields",
+                    "2",
+                    "--max-chars-per-line",
+                    "80",
+                    "--delimiter",
+                    "tab",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["lines"] == ["a\tb"]
+        assert peek.call_args.kwargs == {
+            "lines": 1,
+            "history_id": "hist-1",
+            "max_chars_per_line": 80,
+            "max_fields": 2,
+            "delimiter": "tab",
+        }
+
+    def test_dataset_download_accepts_history_id(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        downloaded = {"output": "out.tsv", "size": 10}
+        client = object()
+
+        with patch("galaxy_cli.cli._get_client", return_value=client), \
+             patch("galaxy_cli.cli.dataset_mod.download_dataset", return_value=downloaded) as download:
+            result = runner.invoke(
+                cli,
+                ["--json", "dataset", "download", "d1", "out.tsv", "--history-id", "hist-1"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["output"] == "out.tsv"
+        download.assert_called_once_with(client, "d1", "out.tsv", history_id="hist-1")
+
+    def test_tool_search_passes_limit_cache_and_resolve_options(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        matches = [{"id": "tool_a", "name": "Tool A", "version": "1.0", "description": ""}]
+
+        with patch("galaxy_cli.cli._get_client", return_value=object()), \
+             patch("galaxy_cli.cli.tool_mod.search_tools", return_value=matches) as search:
+            result = runner.invoke(
+                cli,
+                [
+                    "--json",
+                    "tool",
+                    "search",
+                    "tool",
+                    "--limit",
+                    "3",
+                    "--resolve",
+                    "--cache",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)[0]["id"] == "tool_a"
+        assert search.call_args.kwargs == {
+            "limit": 3,
+            "resolve": True,
+            "use_cache": True,
+            "refresh_cache": False,
+        }
+
+    def test_user_whoami_redacts_email_by_default(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        client = SimpleNamespace(
+            whoami=lambda: {
+                "id": "u1",
+                "username": "test@example.org",
+                "email": "test@example.org",
+                "is_admin": False,
+                "total_disk_usage": 0,
+                "nice_total_disk_usage": "0 bytes",
+            }
+        )
+
+        with patch("galaxy_cli.cli._get_client", return_value=client):
+            result = runner.invoke(cli, ["--json", "user", "whoami"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["username"] == "t***@example.org"
+        assert "email" not in data
+        assert data["email_redacted"] is True
+
+    def test_user_whoami_show_email_is_explicit(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        client = SimpleNamespace(
+            whoami=lambda: {
+                "id": "u1",
+                "username": "testuser",
+                "email": "test@example.org",
+                "is_admin": False,
+                "total_disk_usage": 0,
+                "nice_total_disk_usage": "0 bytes",
+            }
+        )
+
+        with patch("galaxy_cli.cli._get_client", return_value=client):
+            result = runner.invoke(cli, ["--json", "user", "whoami", "--show-email"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["username"] == "testuser"
+        assert data["email"] == "test@example.org"
+
+    def test_skill_path_outputs_packaged_path(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+
+        result = runner.invoke(cli, ["--json", "skill", "path"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["name"] == "galaxy-cli"
+        assert data["exists"] is True
+        assert data["path"].endswith("SKILL.md")
+
+    def test_skill_show_human_outputs_markdown(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+
+        result = runner.invoke(cli, ["--human", "skill", "show"])
+
+        assert result.exit_code == 0, result.output
+        assert result.output.startswith("---")
+        assert "Use this skill when the task requires Galaxy operations" in result.output
+
+    def test_skill_install_to_target_dir(self, tmp_path):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "skill",
+                "install",
+                "--agent",
+                "claude",
+                "--target-dir",
+                str(tmp_path),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        destination = tmp_path / "galaxy-cli" / "SKILL.md"
+        assert data["agent"] == "claude"
+        assert data["status"] == "installed"
+        assert data["destination"] == str(destination)
+        assert destination.exists()
+
     def test_tool_run_wait_keeps_stdout_json_clean(self):
         from galaxy_cli.cli import cli
 

@@ -27,11 +27,18 @@ from galaxy_cli.core import (
     invocation as invocation_mod,
     library as library_mod,
     session as session_mod,
+    skill as skill_mod,
 )
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
-_ROOT_OPTIONS_WITH_VALUES = {"--url", "--api-key", "--profile", "--history-id"}
+_ROOT_OPTIONS_WITH_VALUES = {
+    "--url",
+    "--api-key",
+    "--profile",
+    "--history-id",
+    "--request-timeout",
+}
 
 def _resolve_json_mode(json_mode):
     """Resolve tri-state JSON mode to a boolean."""
@@ -107,6 +114,15 @@ def _write_json_file(path, payload):
         raise click.UsageError(f"Failed to write JSON file {path!r}: {exc}")
 
 
+def _mask_email(email):
+    if not email or "@" not in email:
+        return email or ""
+    local, domain = email.split("@", 1)
+    if not local:
+        return f"***@{domain}"
+    return f"{local[0]}***@{domain}"
+
+
 def _get_client(ctx):
     """Get or create a GalaxyClient from context."""
     if ctx.obj and ctx.obj.get("client"):
@@ -114,7 +130,11 @@ def _get_client(ctx):
     url = ctx.obj.get("url") if ctx.obj else None
     api_key = ctx.obj.get("api_key") if ctx.obj else None
     profile = ctx.obj.get("profile") if ctx.obj else None
-    client = GalaxyClient(url=url, api_key=api_key, profile=profile)
+    request_timeout = ctx.obj.get("request_timeout") if ctx.obj else None
+    kwargs = {"url": url, "api_key": api_key, "profile": profile}
+    if request_timeout is not None:
+        kwargs["request_timeout"] = request_timeout
+    client = GalaxyClient(**kwargs)
     if ctx.obj is not None:
         ctx.obj["client"] = client
     return client
@@ -144,6 +164,13 @@ def _require_history(ctx):
               help="Use a named profile from ~/.galaxy-cli/config.json for this command")
 @click.option("--history-id", default=None, help="Override current history ID")
 @click.option(
+    "--request-timeout",
+    type=click.FloatRange(min=0.001),
+    default=None,
+    envvar="GALAXY_CLI_REQUEST_TIMEOUT",
+    help="Read timeout in seconds for regular Galaxy API requests.",
+)
+@click.option(
     "--json/--human",
     "json_mode",
     default=None,
@@ -151,7 +178,7 @@ def _require_history(ctx):
 )
 @click.version_option(__version__, prog_name="galaxy-cli")
 @click.pass_context
-def cli(ctx, url, api_key, profile, history_id, json_mode):
+def cli(ctx, url, api_key, profile, history_id, request_timeout, json_mode):
     """CLI harness for Galaxy bioinformatics platform.
 
     Connect to a running Galaxy server and manage histories, datasets,
@@ -184,12 +211,16 @@ def cli(ctx, url, api_key, profile, history_id, json_mode):
     ctx.obj["api_key"] = api_key
     ctx.obj["profile"] = profile
     ctx.obj["history_id"] = history_id
+    ctx.obj["request_timeout"] = request_timeout
     ctx.obj["json_mode"] = json_mode
     # Lazily create client — only when a subcommand needs it
     ctx.obj["client"] = None
     if url or api_key or profile:
         try:
-            ctx.obj["client"] = GalaxyClient(url=url, api_key=api_key, profile=profile)
+            kwargs = {"url": url, "api_key": api_key, "profile": profile}
+            if request_timeout is not None:
+                kwargs["request_timeout"] = request_timeout
+            ctx.obj["client"] = GalaxyClient(**kwargs)
         except GalaxyBackendError:
             pass  # Will fail when command actually needs the client
 
@@ -339,7 +370,7 @@ def config_test(ctx):
     result = config_mod.test_connection(client)
     _output(result, lambda d: click.echo(
         f"Connected to Galaxy {d['galaxy_version']}\n"
-        f"User: {d['user']} ({d['email']})"
+        f"User: {d['user']}"
     ))
 
 
@@ -544,10 +575,31 @@ def dataset_list(ctx, history_id, limit):
     default=True,
     help="Wait for the upload job to reach a terminal state. Default: --wait.",
 )
-@click.option("--timeout", default=1800, help="Max wait time in seconds (default: 1800)")
+@click.option(
+    "--timeout",
+    default=1800,
+    help="Max wait time in seconds; also used for the upload POST unless --upload-timeout is set (default: 1800)",
+)
+@click.option(
+    "--upload-timeout",
+    type=click.FloatRange(min=0.001),
+    default=None,
+    envvar="GALAXY_CLI_UPLOAD_TIMEOUT",
+    help="Max seconds for the HTTP upload request. Defaults to --timeout.",
+)
 @click.option("--poll-interval", default=30, help="Seconds between status checks (default: 30)")
 @click.pass_context
-def dataset_upload(ctx, file_path, history_id, file_type, dbkey, wait, timeout, poll_interval):
+def dataset_upload(
+    ctx,
+    file_path,
+    history_id,
+    file_type,
+    dbkey,
+    wait,
+    timeout,
+    upload_timeout,
+    poll_interval,
+):
     """Upload a local file to a Galaxy history.
 
     \b
@@ -570,6 +622,7 @@ def dataset_upload(ctx, file_path, history_id, file_type, dbkey, wait, timeout, 
         dbkey=dbkey,
         wait=wait,
         timeout=timeout,
+        upload_timeout=upload_timeout if upload_timeout is not None else timeout,
         poll_interval=poll_interval,
     )
     if result.get("id"):
@@ -599,22 +652,49 @@ def dataset_show(ctx, dataset_id, history_id):
 @dataset_group.command("download")
 @click.argument("dataset_id")
 @click.argument("output_path")
+@click.option("--history-id", default=None, help="Accepted for consistency; ignored.")
 @click.pass_context
-def dataset_download(ctx, dataset_id, output_path):
+def dataset_download(ctx, dataset_id, output_path, history_id):
     """Download a dataset to a local file."""
     client = _get_client(ctx)
-    result = dataset_mod.download_dataset(client, dataset_id, output_path)
+    result = dataset_mod.download_dataset(client, dataset_id, output_path, history_id=history_id)
     _output(result, lambda d: click.echo(f"Downloaded to: {d['output']} ({d['size']:,} bytes)"))
 
 
 @dataset_group.command("peek")
 @click.argument("dataset_id")
 @click.option("--lines", default=10, help="Number of lines to preview")
+@click.option("--history-id", default=None, help="Accepted for consistency; ignored.")
+@click.option(
+    "--max-chars-per-line",
+    default=500,
+    type=click.IntRange(min=0),
+    help="Maximum characters per preview line; use 0 for no limit (default: 500)",
+)
+@click.option(
+    "--max-fields",
+    default=20,
+    type=click.IntRange(min=0),
+    help="Maximum fields to return for delimited rows; use 0 for no limit (default: 20)",
+)
+@click.option(
+    "--delimiter",
+    default=None,
+    help="Delimiter for field-aware previews: tab, comma, space, or a single character.",
+)
 @click.pass_context
-def dataset_peek(ctx, dataset_id, lines):
+def dataset_peek(ctx, dataset_id, lines, history_id, max_chars_per_line, max_fields, delimiter):
     """Preview the first few lines of a dataset."""
     client = _get_client(ctx)
-    result = dataset_mod.peek_dataset(client, dataset_id, lines=lines)
+    result = dataset_mod.peek_dataset(
+        client,
+        dataset_id,
+        lines=lines,
+        history_id=history_id,
+        max_chars_per_line=max_chars_per_line,
+        max_fields=max_fields,
+        delimiter=delimiter,
+    )
     def _human(d):
         for line in d.get("lines", []):
             click.echo(line)
@@ -791,7 +871,7 @@ def tool_group():
 def tool_list(ctx, query, limit):
     """List available tools."""
     client = _get_client(ctx)
-    results = tool_mod.list_tools(client, query=query)[:limit]
+    results = tool_mod.list_tools(client, query=query, limit=limit)
     def _human(data):
         if not data:
             click.echo("No tools found.")
@@ -805,11 +885,22 @@ def tool_list(ctx, query, limit):
 
 @tool_group.command("search")
 @click.argument("query")
+@click.option("--limit", default=25, type=click.IntRange(min=1), help="Maximum matches to return (default: 25)")
+@click.option("--resolve", is_flag=True, help="Resolve string-only hits with extra tool detail requests.")
+@click.option("--cache", "use_cache", is_flag=True, help="Search a locally cached full tool list when available.")
+@click.option("--refresh-cache", is_flag=True, help="Refresh the local full tool list cache before searching.")
 @click.pass_context
-def tool_search(ctx, query):
+def tool_search(ctx, query, limit, resolve, use_cache, refresh_cache):
     """Search for tools by name or description."""
     client = _get_client(ctx)
-    results = tool_mod.search_tools(client, query)
+    results = tool_mod.search_tools(
+        client,
+        query,
+        limit=limit,
+        resolve=resolve,
+        use_cache=use_cache or refresh_cache,
+        refresh_cache=refresh_cache,
+    )
     def _human(data):
         if not data:
             click.echo(f"No tools matching '{query}'.")
@@ -1473,25 +1564,86 @@ def user_group():
 
 
 @user_group.command("whoami")
+@click.option("--full", is_flag=True, help="Include full identity fields such as email.")
+@click.option("--show-email", is_flag=True, help="Include the account email in output.")
 @click.pass_context
-def user_whoami(ctx):
+def user_whoami(ctx, full, show_email):
     """Show current user info."""
     client = _get_client(ctx)
     result = client.whoami()
+    include_email = full or show_email
+    username = result.get("username", "")
+    email = result.get("email", "")
+    if not include_email and "@" in username:
+        username = _mask_email(username)
     info = {
         "id": result.get("id", ""),
-        "username": result.get("username", ""),
-        "email": result.get("email", ""),
+        "username": username,
         "is_admin": result.get("is_admin", False),
         "total_disk_usage": result.get("total_disk_usage", 0),
         "nice_total_disk_usage": result.get("nice_total_disk_usage", ""),
     }
-    _output(info, lambda d: click.echo(
-        f"User: {d['username']}\n"
-        f"Email: {d['email']}\n"
-        f"Admin: {d['is_admin']}\n"
-        f"Disk usage: {d['nice_total_disk_usage']}"
-    ))
+    if include_email:
+        info["email"] = email
+    elif email:
+        info["email_redacted"] = True
+
+    def _human(d):
+        lines = [f"User: {d['username']}"]
+        if include_email:
+            lines.append(f"Email: {d.get('email', '')}")
+        lines.extend([
+            f"Admin: {d['is_admin']}",
+            f"Disk usage: {d['nice_total_disk_usage']}",
+        ])
+        click.echo("\n".join(lines))
+
+    _output(info, _human)
+
+
+# ── Skill Commands ───────────────────────────────────────────────────────
+
+@cli.group("skill")
+def skill_group():
+    """Install or inspect the bundled AI agent skill."""
+
+
+@skill_group.command("path")
+def skill_path():
+    """Show the packaged SKILL.md path."""
+    result = skill_mod.skill_info()
+    _output(result, lambda d: click.echo(d["path"]))
+
+
+@skill_group.command("show")
+def skill_show():
+    """Print the bundled SKILL.md content."""
+    result = {
+        **skill_mod.skill_info(),
+        "content": skill_mod.read_skill(),
+    }
+    _output(result, lambda d: click.echo(d["content"], nl=False))
+
+
+@skill_group.command("install")
+@click.option(
+    "--agent",
+    type=click.Choice(skill_mod.SUPPORTED_AGENTS),
+    default="codex",
+    show_default=True,
+    help="Agent skill directory convention to use.",
+)
+@click.option(
+    "--target-dir",
+    type=click.Path(file_okay=False, dir_okay=True),
+    default=None,
+    help="Override the skills directory. Installs into TARGET_DIR/galaxy-cli/SKILL.md.",
+)
+@click.option("--force", is_flag=True, help="Overwrite an existing different skill file.")
+def skill_install(agent, target_dir, force):
+    """Install the bundled skill for Codex or Claude Code."""
+    result = skill_mod.install_skill(agent=agent, target_dir=target_dir, force=force)
+    _output(result, lambda d: click.echo(f"{d['status']}: {d['destination']}"))
 
 
 # ── Session Commands ─────────────────────────────────────────────────────
@@ -1540,6 +1692,7 @@ def repl(ctx):
         "invocation": "Manage invocations (list, show, cancel, wait)",
         "library":    "Manage libraries (list, create, show, contents, delete)",
         "user":       "User info (whoami)",
+        "skill":      "Install/inspect bundled AI agent skill",
         "session":    "Local session state (show, clear)",
         "help":       "Show this help",
         "quit":       "Exit the REPL",

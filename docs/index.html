@@ -30,6 +30,7 @@
       </a>
       <nav class="nav" aria-label="Primary navigation">
         <a href="#install">Install</a>
+        <a href="#agent-skill">Agent skill</a>
         <a href="#quickstart">Quickstart</a>
         <a href="#inputs">Inputs</a>
         <a href="#examples">Examples</a>
@@ -89,6 +90,33 @@ $ galaxy-cli tool run "$MULTIQC_TOOL" \
         </div>
       </section>
 
+      <section class="band" id="agent-skill">
+        <div class="section-heading">
+          <p class="eyebrow">Agent skill</p>
+          <h2>Install command knowledge for Codex or Claude Code</h2>
+        </div>
+        <p>
+          The Python package includes a bundled <code>galaxy-cli</code> skill
+          so coding agents can use Galaxy without spending turns rediscovering
+          command syntax, input encoding, and efficient verification steps.
+        </p>
+        <div class="code-grid">
+          <div>
+            <h3>Codex</h3>
+            <pre><code>galaxy-cli skill install --agent codex</code></pre>
+          </div>
+          <div>
+            <h3>Claude Code</h3>
+            <pre><code>galaxy-cli skill install --agent claude</code></pre>
+          </div>
+        </div>
+        <p>
+          Use <code>galaxy-cli skill path</code> to locate the packaged
+          <code>SKILL.md</code>, or pass <code>--target-dir</code> to install
+          into a project-level or custom skills directory.
+        </p>
+      </section>
+
       <section class="band" id="quickstart">
         <div class="section-heading">
           <p class="eyebrow">Quickstart</p>
@@ -104,7 +132,7 @@ galaxy-cli config test</code></pre>
           <li>
             <h3>Create a history and upload data</h3>
             <pre><code>HID=$(galaxy-cli history create "analysis" | jq -r .id)
-FASTQC_TOOL=$(galaxy-cli tool search fastqc | jq -r '.[0].id')
+FASTQC_TOOL=$(galaxy-cli tool search fastqc --limit 5 | jq -r '.[0].id')
 DS=$(galaxy-cli dataset upload reads.fastq.gz \
   --history-id "$HID" \
   --file-type fastqsanger.gz | jq -r .id)</code></pre>
@@ -170,8 +198,8 @@ galaxy-cli tool run "$FASTQC_TOOL" \
         <div class="examples-grid">
           <article>
             <h3>Discover tools and input names</h3>
-            <pre><code>FASTQC_TOOL=$(galaxy-cli tool search fastqc | jq -r '.[0].id')
-MULTIQC_TOOL=$(galaxy-cli tool search multiqc | jq -r '.[0].id')
+            <pre><code>FASTQC_TOOL=$(galaxy-cli tool search fastqc --limit 5 | jq -r '.[0].id')
+MULTIQC_TOOL=$(galaxy-cli tool search multiqc --limit 5 | jq -r '.[0].id')
 galaxy-cli tool show "$FASTQC_TOOL"
 galaxy-cli --human tool show "$MULTIQC_TOOL"
 galaxy-cli tool show "$MULTIQC_TOOL" \

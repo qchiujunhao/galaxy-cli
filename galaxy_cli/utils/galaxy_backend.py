@@ -7,6 +7,9 @@ Galaxy is a hard dependency: the CLI is useless without a reachable server.
 import json
 import os
 import stat
+import time
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -14,7 +17,11 @@ import requests
 
 DEFAULT_CONFIG_DIR = Path.home() / ".galaxy-cli"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.json"
-DEFAULT_TIMEOUT = 60
+DEFAULT_CONNECT_TIMEOUT = 30
+DEFAULT_REQUEST_TIMEOUT = 60
+DEFAULT_UPLOAD_TIMEOUT = 300
+DEFAULT_TIMEOUT = DEFAULT_REQUEST_TIMEOUT
+RETRYABLE_GET_STATUS_CODES = {429, 502, 503, 504}
 
 
 # Exit codes for structured error reporting
@@ -53,6 +60,25 @@ class GalaxyBackendError(Exception):
         return d
 
 
+def _parse_timeout_seconds(value, label):
+    """Parse a positive timeout value from CLI/env/config input."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise GalaxyBackendError(
+            f"Invalid {label}: {value!r}. Expected a positive number of seconds.",
+            category="invalid_request",
+            exit_code=EXIT_USER_ERROR,
+        ) from exc
+    if parsed <= 0:
+        raise GalaxyBackendError(
+            f"Invalid {label}: {value!r}. Expected a positive number of seconds.",
+            category="invalid_request",
+            exit_code=EXIT_USER_ERROR,
+        )
+    return parsed
+
+
 class GalaxyClient:
     """HTTP client for the Galaxy REST API.
 
@@ -64,7 +90,18 @@ class GalaxyClient:
     5. Legacy top-level url / api_key (older config format)
     """
 
-    def __init__(self, url=None, api_key=None, profile=None, timeout=DEFAULT_TIMEOUT):
+    def __init__(
+        self,
+        url=None,
+        api_key=None,
+        profile=None,
+        timeout=None,
+        request_timeout=None,
+        upload_timeout=None,
+        connect_timeout=DEFAULT_CONNECT_TIMEOUT,
+        max_get_retries=3,
+        retry_backoff=1.0,
+    ):
         self.url = (
             url
             or os.environ.get("GALAXY_URL")
@@ -75,7 +112,30 @@ class GalaxyClient:
             or os.environ.get("GALAXY_API_KEY")
             or self._load_config_value("api_key", profile=profile)
         )
-        self.timeout = timeout
+        # `timeout` is kept as a backwards-compatible alias for request_timeout.
+        raw_request_timeout = (
+            request_timeout
+            if request_timeout is not None
+            else timeout
+            if timeout is not None
+            else os.environ.get("GALAXY_CLI_REQUEST_TIMEOUT")
+            or DEFAULT_REQUEST_TIMEOUT
+        )
+        self.request_timeout = _parse_timeout_seconds(raw_request_timeout, "request timeout")
+        self.timeout = self.request_timeout
+        raw_upload_timeout = (
+            upload_timeout
+            if upload_timeout is not None
+            else os.environ.get("GALAXY_CLI_UPLOAD_TIMEOUT")
+        )
+        self.upload_timeout = (
+            _parse_timeout_seconds(raw_upload_timeout, "upload timeout")
+            if raw_upload_timeout is not None
+            else max(self.request_timeout, DEFAULT_UPLOAD_TIMEOUT)
+        )
+        self.connect_timeout = _parse_timeout_seconds(connect_timeout, "connect timeout")
+        self.max_get_retries = max(0, int(max_get_retries))
+        self.retry_backoff = max(0.0, float(retry_backoff))
 
         if not self.url:
             raise GalaxyBackendError(
@@ -181,36 +241,67 @@ class GalaxyClient:
     def _api_url(self, path):
         return urljoin(self.url, f"api/{path.lstrip('/')}")
 
+    def _timeout_tuple(self, read_timeout=None):
+        return (self.connect_timeout, read_timeout or self.request_timeout)
+
+    def _retry_after_seconds(self, resp, attempt):
+        retry_after = resp.headers.get("Retry-After") if resp.headers else None
+        if retry_after:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(retry_after)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=timezone.utc)
+                    return max(0.0, retry_at.timestamp() - time.time())
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        return min(60.0, self.retry_backoff * (2 ** attempt))
+
     def _request(self, method, path, **kwargs):
         """Issue an HTTP request and normalize transport-layer failures."""
-        try:
-            return requests.request(
-                method,
-                self._api_url(path),
-                timeout=self.timeout,
-                **kwargs,
-            )
-        except requests.exceptions.SSLError as exc:
-            raise GalaxyBackendError(
-                f"TLS/SSL handshake failed while connecting to Galaxy at {self.url}",
-                category="connection",
-                exit_code=EXIT_SERVER_ERROR,
-                suggestion="Use a modern Python build (uv-managed or Homebrew Python 3.9+).",
-            ) from exc
-        except requests.ConnectionError as exc:
-            raise GalaxyBackendError(
-                f"Cannot connect to Galaxy at {self.url}",
-                category="connection",
-                exit_code=EXIT_SERVER_ERROR,
-                suggestion="Ensure the Galaxy server is running and reachable.",
-            ) from exc
-        except requests.Timeout as exc:
-            raise GalaxyBackendError(
-                f"Request to Galaxy timed out after {self.timeout}s",
-                category="timeout",
-                exit_code=EXIT_TIMEOUT,
-                suggestion="Increase timeout or check server load.",
-            ) from exc
+        method = method.upper()
+        attempt = 0
+        while True:
+            try:
+                resp = requests.request(
+                    method,
+                    self._api_url(path),
+                    timeout=self._timeout_tuple(),
+                    **kwargs,
+                )
+            except requests.exceptions.SSLError as exc:
+                raise GalaxyBackendError(
+                    f"TLS/SSL handshake failed while connecting to Galaxy at {self.url}",
+                    category="connection",
+                    exit_code=EXIT_SERVER_ERROR,
+                    suggestion="Use a modern Python build (uv-managed or Homebrew Python 3.9+).",
+                ) from exc
+            except requests.ConnectionError as exc:
+                raise GalaxyBackendError(
+                    f"Cannot connect to Galaxy at {self.url}",
+                    category="connection",
+                    exit_code=EXIT_SERVER_ERROR,
+                    suggestion="Ensure the Galaxy server is running and reachable.",
+                ) from exc
+            except requests.Timeout as exc:
+                raise GalaxyBackendError(
+                    f"Request to Galaxy timed out after {self.request_timeout}s",
+                    category="timeout",
+                    exit_code=EXIT_TIMEOUT,
+                    suggestion="Increase request timeout or check server load.",
+                ) from exc
+
+            if (
+                method == "GET"
+                and resp.status_code in RETRYABLE_GET_STATUS_CODES
+                and attempt < self.max_get_retries
+            ):
+                time.sleep(self._retry_after_seconds(resp, attempt))
+                attempt += 1
+                continue
+            return resp
 
     def _handle_response(self, resp):
         """Parse response and raise on errors."""
@@ -317,7 +408,7 @@ class GalaxyClient:
         )
         return self._handle_response(resp)
 
-    def upload_file(self, file_path, history_id, file_type="auto", dbkey="?"):
+    def upload_file(self, file_path, history_id, file_type="auto", dbkey="?", upload_timeout=None):
         """Upload a file to a Galaxy history using the upload tool."""
         file_path = Path(file_path)
         if not file_path.exists():
@@ -337,7 +428,11 @@ class GalaxyClient:
                 "files_0|to_posix_lines": False,
             }),
         }
-        upload_timeout = max(self.timeout, 300)
+        effective_upload_timeout = (
+            _parse_timeout_seconds(upload_timeout, "upload timeout")
+            if upload_timeout is not None
+            else self.upload_timeout
+        )
         with open(file_path, "rb") as handle:
             files = {"files_0|file_data": (file_path.name, handle)}
             try:
@@ -346,7 +441,7 @@ class GalaxyClient:
                     headers=self._upload_headers(),
                     data=payload,
                     files=files,
-                    timeout=upload_timeout,
+                    timeout=self._timeout_tuple(effective_upload_timeout),
                 )
             except requests.exceptions.SSLError as exc:
                 raise GalaxyBackendError(
@@ -364,10 +459,10 @@ class GalaxyClient:
                 ) from exc
             except requests.Timeout as exc:
                 raise GalaxyBackendError(
-                    f"Upload timed out after {upload_timeout}s",
+                    f"Upload timed out after {effective_upload_timeout}s",
                     category="timeout",
                     exit_code=EXIT_TIMEOUT,
-                    suggestion="Increase timeout or try a smaller file.",
+                    suggestion="Increase upload timeout or try a smaller file.",
                 ) from exc
         return self._handle_response(resp)
 

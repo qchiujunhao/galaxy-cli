@@ -1,6 +1,11 @@
 """Tool management — list, search, show, run Galaxy tools."""
 
+import hashlib
+import json
 import re
+import time
+
+from galaxy_cli.utils.galaxy_backend import DEFAULT_CONFIG_DIR
 
 
 _GALAXY_ID_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
@@ -37,48 +42,52 @@ def _normalize_tool_dict(tool, section_id=None):
     }
 
 
-def _resolve_search_hits(client, tools):
+def _normalize_tool_id(tool_id):
+    return {
+        "id": tool_id,
+        "name": "",
+        "version": "",
+        "description": "",
+        "section": "",
+    }
+
+
+def _resolve_search_hits(client, tools, limit=None):
     """Resolve string-only search hits into full tool records."""
     if not tools or not all(isinstance(tool, str) for tool in tools):
         return tools
-    return [client.get(f"tools/{tool_id}") for tool_id in tools]
+    tool_ids = tools[:limit] if limit else tools
+    return [client.get(f"tools/{tool_id}") for tool_id in tool_ids]
 
 
-def list_tools(client, query=None, section_id=None):
+def list_tools(client, query=None, section_id=None, resolve=True, limit=None):
     """List available tools, optionally filtered by search or section."""
     params = {"in_panel": False}
     if query:
         params["q"] = query
     tools = client.get("tools", params=params)
-    tools = _resolve_search_hits(client, tools)
+    if resolve:
+        tools = _resolve_search_hits(client, tools, limit=limit)
     results = []
     for t in tools:
         if isinstance(t, dict):
             normalized = _normalize_tool_dict(t, section_id=section_id)
             if normalized is not None:
                 results.append(normalized)
+        elif isinstance(t, str) and not resolve:
+            results.append(_normalize_tool_id(t))
+        if limit and len(results) >= limit:
+            break
     return results
 
 
-def search_tools(client, query):
-    """Search tools by name or description."""
-    query = (query or "").strip()
-    if not query:
-        return []
-
-    # First try Galaxy's native search behavior.
-    direct_results = list_tools(client, query=query)
-    if direct_results:
-        return direct_results
-
-    terms = [term.lower() for term in query.split() if term.strip()]
-    if len(terms) <= 1:
-        return direct_results
-
-    # Fallback: keyword AND matching across ID, name, description, and section.
-    all_tools = list_tools(client)
+def _rank_tool_matches(tools, terms):
     ranked = []
-    for tool in all_tools:
+    for tool in tools:
+        if isinstance(tool, str):
+            tool = _normalize_tool_id(tool)
+        if not isinstance(tool, dict):
+            continue
         haystack = _searchable_text(tool)
         if all(term in haystack for term in terms):
             score = 0
@@ -96,6 +105,76 @@ def search_tools(client, query):
 
     ranked.sort(key=lambda item: (-item[0], item[1].get("name", ""), item[1].get("id", "")))
     return [tool for _, tool in ranked]
+
+
+def _tool_cache_path(client):
+    digest = hashlib.sha256(client.url.encode("utf-8")).hexdigest()[:16]
+    return DEFAULT_CONFIG_DIR / "tool-cache" / f"{digest}.json"
+
+
+def _read_tool_cache(client):
+    path = _tool_cache_path(client)
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return None
+    return tools
+
+
+def _write_tool_cache(client, tools):
+    path = _tool_cache_path(client)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload = {
+        "url": client.url,
+        "created_at": time.time(),
+        "tools": tools,
+    }
+    path.write_text(json.dumps(payload, separators=(",", ":")))
+    return path
+
+
+def _load_cached_tools(client, refresh_cache=False):
+    if not refresh_cache:
+        cached = _read_tool_cache(client)
+        if cached is not None:
+            return cached
+    tools = list_tools(client, resolve=False)
+    _write_tool_cache(client, tools)
+    return tools
+
+
+def search_tools(
+    client,
+    query,
+    limit=25,
+    resolve=False,
+    use_cache=False,
+    refresh_cache=False,
+):
+    """Search tools by name or description."""
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    terms = [term.lower() for term in query.split() if term.strip()]
+    if use_cache or refresh_cache:
+        all_tools = _load_cached_tools(client, refresh_cache=refresh_cache)
+        return _rank_tool_matches(all_tools, terms)[:limit]
+
+    # First try Galaxy's native search behavior.
+    direct_results = list_tools(client, query=query, resolve=resolve, limit=limit)
+    if direct_results:
+        return direct_results[:limit]
+
+    if len(terms) <= 1:
+        return direct_results
+
+    # Fallback: keyword AND matching across ID, name, description, and section.
+    all_tools = list_tools(client, resolve=False)
+    return _rank_tool_matches(all_tools, terms)[:limit]
 
 
 def _normalize_input(inp):

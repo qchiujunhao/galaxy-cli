@@ -55,6 +55,23 @@ which galaxy-cli
 galaxy-cli --version
 ```
 
+## AI Agent Skill
+
+The package includes a `galaxy-cli` skill for Codex and Claude Code so agents
+can use the CLI without rediscovering command syntax.
+
+```bash
+# Install for Codex: ~/.codex/skills/galaxy-cli/SKILL.md
+galaxy-cli skill install --agent codex
+
+# Install for Claude Code: ~/.claude/skills/galaxy-cli/SKILL.md
+galaxy-cli skill install --agent claude
+```
+
+Use `galaxy-cli skill path` to find the packaged skill, or
+`galaxy-cli skill install --target-dir /path/to/skills` for another agent or
+project-level skills directory.
+
 ## Configuration
 
 Set your Galaxy server URL and API key:
@@ -77,7 +94,7 @@ Documentation site: https://qchiujunhao.github.io/galaxy-cli/
 ```bash
 galaxy-cli history list
 galaxy-cli history create "My Analysis"
-galaxy-cli tool search "bowtie"
+galaxy-cli tool search "bowtie" --limit 5
 galaxy-cli workflow list
 galaxy-cli workflow list | jq .
 galaxy-cli --human config show
@@ -85,6 +102,10 @@ galaxy-cli --human config show
 
 `galaxy-cli` defaults to compact JSON output. Use `--human` for
 human-readable terminal output.
+
+For large dataset uploads, use `--upload-timeout` to control the HTTP POST
+separately from the upload job wait. `GALAXY_CLI_REQUEST_TIMEOUT` controls
+regular API request reads, and `GALAXY_CLI_UPLOAD_TIMEOUT` controls uploads.
 
 Run the REPL:
 

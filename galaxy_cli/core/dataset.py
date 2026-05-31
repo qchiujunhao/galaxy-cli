@@ -1,6 +1,6 @@
 """Dataset management — upload, download, show, delete, peek at datasets."""
 
-from pathlib import Path
+import csv
 
 from galaxy_cli.utils.galaxy_backend import (
     EXIT_USER_ERROR,
@@ -17,10 +17,17 @@ def upload_dataset(
     dbkey="?",
     wait=False,
     timeout=1800,
+    upload_timeout=None,
     poll_interval=30,
 ):
     """Upload a local file to a Galaxy history."""
-    result = client.upload_file(file_path, history_id, file_type=file_type, dbkey=dbkey)
+    result = client.upload_file(
+        file_path,
+        history_id,
+        file_type=file_type,
+        dbkey=dbkey,
+        upload_timeout=upload_timeout,
+    )
     outputs = result.get("outputs", [])
     jobs = result.get("jobs", [])
     if outputs:
@@ -95,41 +102,166 @@ def show_dataset(client, dataset_id, history_id=None):
     }
 
 
-def download_dataset(client, dataset_id, output_path):
+def download_dataset(client, dataset_id, output_path, history_id=None):
     """Download a dataset to a local file."""
     return client.download_dataset(dataset_id, output_path)
 
 
-def peek_dataset(client, dataset_id, lines=10):
+def _normalize_delimiter(delimiter):
+    if delimiter is None:
+        return None
+    aliases = {
+        "tab": "\t",
+        "\\t": "\t",
+        "t": "\t",
+        "comma": ",",
+        "csv": ",",
+        "space": " ",
+    }
+    return aliases.get(delimiter, delimiter)
+
+
+def _detect_delimiter(line):
+    if "\t" in line:
+        return "\t"
+    if "," in line:
+        return ","
+    return None
+
+
+def _preview_rows(raw_lines, max_chars_per_line=500, max_fields=20, delimiter=None):
+    normalized_delimiter = _normalize_delimiter(delimiter)
+    compact_lines = []
+    rows = []
+    for index, raw_line in enumerate(raw_lines, start=1):
+        line = str(raw_line).rstrip("\n")
+        row = {"line_number": index}
+        preview = line
+        active_delimiter = normalized_delimiter or _detect_delimiter(line)
+
+        if active_delimiter:
+            try:
+                fields = next(csv.reader([line], delimiter=active_delimiter))
+            except csv.Error:
+                fields = line.split(active_delimiter)
+            field_count = len(fields)
+            if max_fields and field_count > max_fields:
+                preview_fields = fields[:max_fields]
+                preview = active_delimiter.join(preview_fields)
+                row["truncated_fields"] = True
+            else:
+                preview_fields = fields if not max_fields else fields[:max_fields]
+                row["truncated_fields"] = False
+            row["delimiter"] = active_delimiter
+            row["field_count"] = field_count
+            row["fields"] = preview_fields
+
+        if max_chars_per_line and len(preview) > max_chars_per_line:
+            preview = preview[:max_chars_per_line]
+            row["truncated_chars"] = True
+        else:
+            row["truncated_chars"] = False
+
+        row["text"] = preview
+        compact_lines.append(preview)
+        rows.append(row)
+    return compact_lines, rows
+
+
+def _peek_result(dataset_id, raw_lines, lines, max_chars_per_line, max_fields, delimiter):
+    selected = [str(line).rstrip("\n") for line in raw_lines[:lines]]
+    preview_lines, rows = _preview_rows(
+        selected,
+        max_chars_per_line=max_chars_per_line,
+        max_fields=max_fields,
+        delimiter=delimiter,
+    )
+    return {
+        "id": dataset_id,
+        "lines": preview_lines,
+        "rows": rows,
+        "total_shown": len(preview_lines),
+        "max_chars_per_line": max_chars_per_line,
+        "max_fields": max_fields,
+    }
+
+
+def peek_dataset(
+    client,
+    dataset_id,
+    lines=10,
+    history_id=None,
+    max_chars_per_line=500,
+    max_fields=20,
+    delimiter=None,
+):
     """Get a preview of dataset contents."""
     info = client.get(f"datasets/{dataset_id}", params={"data_type": "raw_data", "provider": "base"})
     # Some Galaxy deployments expose preview text under `peek`.
     if "peek" in info:
         raw_peek = info["peek"]
-        peek_lines = raw_peek.strip().split("\n")[:lines]
-        return {"id": dataset_id, "lines": peek_lines, "total_shown": len(peek_lines)}
+        return _peek_result(
+            dataset_id,
+            raw_peek.strip().split("\n"),
+            lines,
+            max_chars_per_line,
+            max_fields,
+            delimiter,
+        )
 
     # usegalaxy.org commonly returns preview rows under `data`.
     raw_data = info.get("data")
     if isinstance(raw_data, list):
-        peek_lines = [str(line).rstrip("\n") for line in raw_data[:lines]]
-        return {"id": dataset_id, "lines": peek_lines, "total_shown": len(peek_lines)}
+        return _peek_result(
+            dataset_id,
+            raw_data,
+            lines,
+            max_chars_per_line,
+            max_fields,
+            delimiter,
+        )
     if isinstance(raw_data, str) and raw_data.strip():
-        peek_lines = raw_data.strip().split("\n")[:lines]
-        return {"id": dataset_id, "lines": peek_lines, "total_shown": len(peek_lines)}
+        return _peek_result(
+            dataset_id,
+            raw_data.strip().split("\n"),
+            lines,
+            max_chars_per_line,
+            max_fields,
+            delimiter,
+        )
 
     # Fallback: try getting raw content directly.
     try:
         preview = client.get(f"datasets/{dataset_id}/display", params={"offset": 0, "limit": lines})
         if isinstance(preview, dict) and "raw" in preview and preview["raw"]:
-            peek_lines = preview["raw"].strip().split("\n")[:lines]
-            return {"id": dataset_id, "lines": peek_lines, "total_shown": len(peek_lines)}
+            return _peek_result(
+                dataset_id,
+                preview["raw"].strip().split("\n"),
+                lines,
+                max_chars_per_line,
+                max_fields,
+                delimiter,
+            )
         if isinstance(preview, dict) and "ck_data" in preview and preview["ck_data"]:
-            peek_lines = str(preview["ck_data"]).strip().split("\n")[:lines]
-            return {"id": dataset_id, "lines": peek_lines, "total_shown": len(peek_lines)}
+            return _peek_result(
+                dataset_id,
+                str(preview["ck_data"]).strip().split("\n"),
+                lines,
+                max_chars_per_line,
+                max_fields,
+                delimiter,
+            )
     except Exception:
         pass
-    return {"id": dataset_id, "lines": [], "total_shown": 0, "note": "Preview not available"}
+    return {
+        "id": dataset_id,
+        "lines": [],
+        "rows": [],
+        "total_shown": 0,
+        "max_chars_per_line": max_chars_per_line,
+        "max_fields": max_fields,
+        "note": "Preview not available",
+    }
 
 
 def delete_dataset(client, dataset_id, history_id, purge=False):
