@@ -97,11 +97,16 @@ galaxy-cli tool search "bowtie" --limit 5
 galaxy-cli tool run toolshed.g2.bx.psu.edu/repos/.../bowtie2 \
   --history-id abc123 -i input=dataset-id
 
+# Validate and inspect the exact POST body without submitting
+galaxy-cli tool run toolshed.g2.bx.psu.edu/repos/.../bowtie2 \
+  --history-id abc123 -i input=dataset-id --dry-run-payload
+
 # Check job status
 galaxy-cli job show job-id
 
 # Run a workflow
 galaxy-cli workflow run workflow-id -i 0=dataset-id
+galaxy-cli workflow run workflow-id --history-id abc123 -i 0=dataset-id --dry-run-payload
 ```
 
 ### Machine-readable output

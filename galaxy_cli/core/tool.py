@@ -5,7 +5,11 @@ import json
 import re
 import time
 
-from galaxy_cli.utils.galaxy_backend import DEFAULT_CONFIG_DIR
+from galaxy_cli.utils.galaxy_backend import (
+    DEFAULT_CONFIG_DIR,
+    EXIT_USER_ERROR,
+    GalaxyBackendError,
+)
 
 
 _GALAXY_ID_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
@@ -350,6 +354,34 @@ def _collect_input_types(inputs):
     return input_types
 
 
+def _collect_input_defs(inputs):
+    """Map flattened Galaxy input paths to normalized input definitions."""
+    input_defs = {}
+
+    def _add(inp, prefix=""):
+        name = inp.get("name")
+        path = f"{prefix}|{name}" if prefix and name else name
+        if name and path:
+            input_defs[path] = inp
+        if not path:
+            return
+        input_type = inp.get("type")
+        if input_type == "conditional":
+            test_param = inp.get("test_param") or {}
+            if isinstance(test_param, dict):
+                _add(test_param, path)
+            for case in inp.get("cases", []) or []:
+                for child in case.get("inputs", []) or []:
+                    _add(child, path)
+        elif input_type in {"repeat", "section"}:
+            for child in inp.get("inputs", []) or []:
+                _add(child, path)
+
+    for inp in inputs or []:
+        _add(inp)
+    return input_defs
+
+
 def _canonical_input_type_key(name):
     """Normalize repeat-indexed keys like ``results_0|input`` for lookup."""
     return re.sub(r"_(\d+)(?=\|)", "", name)
@@ -369,6 +401,215 @@ def _normalize_tool_input(name, value, input_types):
             src = "hdca" if input_type == "data_collection" else "hda"
             return {"src": src, "id": value}
     return value
+
+
+def _validation_error(message, suggestion):
+    raise GalaxyBackendError(
+        message,
+        category="invalid_request",
+        exit_code=EXIT_USER_ERROR,
+        suggestion=suggestion,
+    )
+
+
+def _canonical_input_key(name):
+    """Normalize repeat-indexed keys like ``a_0|b_12|c`` for schema lookup."""
+    return re.sub(r"_(\d+)(?=\|)", "", name)
+
+
+def _value_present(value):
+    return value is not None and value != "" and value != []
+
+
+def _input_has_default(inp):
+    return _value_present(inp.get("default")) or _value_present(inp.get("value"))
+
+
+def _is_required_input(inp):
+    return (
+        inp.get("type") in {"data", "data_collection"}
+        and not inp.get("optional", False)
+        and not _input_has_default(inp)
+    )
+
+
+def _validate_data_ref(path, value, input_type):
+    expected_sources = {"data": {"hda", "ldda"}, "data_collection": {"hdca"}}.get(input_type)
+    if not expected_sources:
+        return
+    values = value if isinstance(value, list) else [value]
+    for item in values:
+        if isinstance(item, dict):
+            src = item.get("src")
+            ref_id = item.get("id")
+            if not src or not ref_id:
+                _validation_error(
+                    f"Invalid data reference for input '{path}'. Expected an object with src and id.",
+                    "Use {'src':'hda','id':'DATASET_ID'} for datasets or {'src':'hdca','id':'COLLECTION_ID'} for collections.",
+                )
+            if src not in expected_sources:
+                expected = ", ".join(sorted(expected_sources))
+                _validation_error(
+                    f"Input '{path}' expects {input_type}, but source '{src}' was provided.",
+                    f"Use one of these source prefixes for '{path}': {expected}.",
+                )
+        elif isinstance(item, str) and ":" in item:
+            src, ref_id = item.split(":", 1)
+            if src in {"hda", "hdca", "ldda"} and ref_id:
+                if src not in expected_sources:
+                    expected = ", ".join(sorted(expected_sources))
+                    _validation_error(
+                        f"Input '{path}' expects {input_type}, but source '{src}' was provided.",
+                        f"Use one of these source prefixes for '{path}': {expected}.",
+                    )
+            elif ref_id:
+                _validation_error(
+                    f"Unsupported data source prefix '{src}' for input '{path}'.",
+                    "Use hda: or ldda: for datasets, and hdca: for dataset collections.",
+                )
+
+
+def _validate_select(path, value, inp):
+    if not _value_present(value):
+        return
+    options = inp.get("options", []) or []
+    allowed = {str(opt.get("value")) for opt in options if "value" in opt}
+    if not allowed:
+        return
+    values = value if isinstance(value, list) else [value]
+    invalid = [str(item) for item in values if str(item) not in allowed]
+    if invalid:
+        _validation_error(
+            f"Invalid select value for input '{path}': {', '.join(invalid)}.",
+            f"Use one of: {', '.join(sorted(allowed))}.",
+        )
+
+
+def _validate_boolean(path, value, inp):
+    if isinstance(value, bool) or not _value_present(value):
+        return
+    allowed = {
+        "true",
+        "false",
+        str(inp.get("truevalue", "true")),
+        str(inp.get("falsevalue", "false")),
+    }
+    if str(value).lower() not in {item.lower() for item in allowed}:
+        _validation_error(
+            f"Invalid boolean value for input '{path}': {value!r}.",
+            "Use true or false.",
+        )
+
+
+def _validate_number(path, value, inp):
+    if not _value_present(value):
+        return
+    try:
+        parsed = float(value) if inp.get("type") == "float" else int(value)
+    except (TypeError, ValueError) as exc:
+        _validation_error(
+            f"Invalid {inp.get('type')} value for input '{path}': {value!r}.",
+            f"Provide a valid {inp.get('type')} value for '{path}'.",
+        )
+        raise AssertionError("unreachable") from exc
+    minimum = inp.get("min")
+    maximum = inp.get("max")
+    if minimum is not None and parsed < minimum:
+        _validation_error(
+            f"Input '{path}' must be at least {minimum}; got {value!r}.",
+            f"Choose a value >= {minimum}.",
+        )
+    if maximum is not None and parsed > maximum:
+        _validation_error(
+            f"Input '{path}' must be at most {maximum}; got {value!r}.",
+            f"Choose a value <= {maximum}.",
+        )
+
+
+def _provided_key_matches(required_path, flat_inputs):
+    required_parts = required_path.split("|")
+    for key in flat_inputs:
+        key_parts = key.split("|")
+        if len(key_parts) != len(required_parts):
+            continue
+        if all(_canonical_input_key(kp) == rp for kp, rp in zip(key_parts, required_parts)):
+            return True
+    return False
+
+
+def _has_provided_input_under(path, flat_inputs):
+    canonical_path = _canonical_input_key(path)
+    for key in flat_inputs:
+        canonical_key = _canonical_input_key(key)
+        if canonical_key == canonical_path or canonical_key.startswith(f"{canonical_path}|"):
+            return True
+    return False
+
+
+def _repeat_minimum(inp):
+    try:
+        return int(inp.get("min", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _validate_required_inputs(inputs, flat_inputs):
+    def _walk(inp, prefix=""):
+        name = inp.get("name")
+        path = f"{prefix}|{name}" if prefix and name else name
+        input_type = inp.get("type")
+        if not path:
+            return
+        if input_type == "conditional":
+            test_param = inp.get("test_param") or {}
+            test_path = f"{path}|{test_param.get('name')}" if test_param.get("name") else ""
+            selected = flat_inputs.get(test_path)
+            if selected is None:
+                return
+            for case in inp.get("cases", []) or []:
+                if str(case.get("value")) == str(selected):
+                    for child in case.get("inputs", []) or []:
+                        _walk(child, path)
+                    return
+        elif input_type == "repeat":
+            if _repeat_minimum(inp) <= 0 and not _has_provided_input_under(path, flat_inputs):
+                return
+            for child in inp.get("inputs", []) or []:
+                _walk(child, path)
+        elif input_type == "section":
+            for child in inp.get("inputs", []) or []:
+                _walk(child, path)
+        elif _is_required_input(inp) and not _provided_key_matches(path, flat_inputs):
+            _validation_error(
+                f"Missing required input '{path}'.",
+                "Run `galaxy-cli tool show TOOL_ID` to inspect required input names, then pass them with -i or --inputs-json.",
+            )
+
+    for inp in inputs or []:
+        _walk(inp)
+
+
+def validate_tool_inputs(tool_info, flat_inputs):
+    """Validate obvious tool input mistakes before submitting to Galaxy."""
+    input_defs = _collect_input_defs(tool_info.get("inputs", []))
+    for path, value in flat_inputs.items():
+        canonical = _canonical_input_key(path)
+        inp = input_defs.get(path) or input_defs.get(canonical)
+        if inp is None:
+            _validation_error(
+                f"Unknown input '{path}' for tool '{tool_info.get('id', '')}'.",
+                "Run `galaxy-cli tool show TOOL_ID` and use the listed input names.",
+            )
+        input_type = inp.get("type")
+        if input_type in {"data", "data_collection"}:
+            _validate_data_ref(path, value, input_type)
+        elif input_type == "select":
+            _validate_select(path, value, inp)
+        elif input_type == "boolean":
+            _validate_boolean(path, value, inp)
+        elif input_type in {"integer", "float"}:
+            _validate_number(path, value, inp)
+    _validate_required_inputs(tool_info.get("inputs", []), flat_inputs)
 
 
 def _flatten_nested_inputs(inputs):
@@ -415,6 +656,7 @@ def build_tool_payload(client, tool_id, history_id, inputs=None):
     """Build the exact POST body for a Galaxy tool execution."""
     flat_inputs = _flatten_nested_inputs(inputs or {})
     tool_info = show_tool(client, tool_id)
+    validate_tool_inputs(tool_info, flat_inputs)
     input_types = _collect_input_types(tool_info.get("inputs", []))
     normalized_inputs = {
         key: _normalize_tool_input(key, value, input_types)

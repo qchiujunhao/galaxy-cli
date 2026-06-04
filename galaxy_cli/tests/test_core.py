@@ -859,6 +859,130 @@ class TestTool:
         assert result["jobs"][0]["id"] == "j1"
         assert len(result["outputs"]) == 1
 
+    def test_run_tool_rejects_unknown_input_before_submit(self):
+        from galaxy_cli.core.tool import run_tool
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "fastqc",
+            "name": "FastQC",
+            "version": "0.73",
+            "description": "",
+            "inputs": [{"name": "input_file", "label": "Raw data", "type": "data", "optional": False}],
+            "outputs": [],
+        }
+
+        with pytest.raises(GalaxyBackendError) as exc:
+            run_tool(client, "fastqc", "h1", inputs={"wrong_name": "d1", "input_file": "d1"})
+
+        assert exc.value.category == "invalid_request"
+        assert "Unknown input 'wrong_name'" in str(exc.value)
+        client.post.assert_not_called()
+
+    def test_run_tool_rejects_missing_required_data_before_submit(self):
+        from galaxy_cli.core.tool import run_tool
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "fastqc",
+            "name": "FastQC",
+            "version": "0.73",
+            "description": "",
+            "inputs": [{"name": "input_file", "label": "Raw data", "type": "data", "optional": False}],
+            "outputs": [],
+        }
+
+        with pytest.raises(GalaxyBackendError) as exc:
+            run_tool(client, "fastqc", "h1", inputs={})
+
+        assert exc.value.category == "invalid_request"
+        assert "Missing required input 'input_file'" in str(exc.value)
+        client.post.assert_not_called()
+
+    def test_run_tool_allows_omitted_zero_min_repeat_inputs(self):
+        from galaxy_cli.core.tool import run_tool
+
+        client = self._mock_client()
+        dataset_id = "f9cad7b01a4721358dba0ff950c535fa"
+        client.get.return_value = {
+            "id": "cat1",
+            "name": "Concatenate multiple datasets or collections",
+            "version": "1.0.0",
+            "description": "",
+            "inputs": [
+                {"name": "input1", "label": "Concatenate Dataset", "type": "data", "optional": False},
+                {
+                    "name": "queries",
+                    "label": "",
+                    "type": "repeat",
+                    "optional": False,
+                    "inputs": [{"name": "input2", "label": "Select", "type": "data", "optional": False}],
+                    "min": 0,
+                    "max": "__Infinity__",
+                    "default": 0,
+                },
+            ],
+            "outputs": [],
+        }
+        client.post.return_value = {"jobs": [], "outputs": []}
+
+        run_tool(client, "cat1", "h1", inputs={"input1": dataset_id})
+
+        _, kwargs = client.post.call_args
+        assert kwargs["json_data"]["inputs"]["input1"] == {"src": "hda", "id": dataset_id}
+        assert "queries|input2" not in kwargs["json_data"]["inputs"]
+
+    def test_run_tool_rejects_collection_source_for_dataset_input(self):
+        from galaxy_cli.core.tool import run_tool
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "fastqc",
+            "name": "FastQC",
+            "version": "0.73",
+            "description": "",
+            "inputs": [{"name": "input_file", "label": "Raw data", "type": "data", "optional": False}],
+            "outputs": [],
+        }
+
+        with pytest.raises(GalaxyBackendError) as exc:
+            run_tool(client, "fastqc", "h1", inputs={"input_file": "hdca:collection-1"})
+
+        assert exc.value.category == "invalid_request"
+        assert "expects data" in str(exc.value)
+        client.post.assert_not_called()
+
+    def test_run_tool_rejects_invalid_select_value_before_submit(self):
+        from galaxy_cli.core.tool import run_tool
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "cut1",
+            "name": "Cut",
+            "version": "1.0",
+            "description": "",
+            "inputs": [
+                {
+                    "name": "style",
+                    "label": "Style",
+                    "type": "select",
+                    "options": [["Cut", "cut", False], ["Keep", "keep", False]],
+                }
+            ],
+            "outputs": [],
+        }
+
+        with pytest.raises(GalaxyBackendError) as exc:
+            run_tool(client, "cut1", "h1", inputs={"style": "drop"})
+
+        assert exc.value.category == "invalid_request"
+        assert "Invalid select value" in str(exc.value)
+        client.post.assert_not_called()
+
     def test_run_tool_includes_collection_outputs(self):
         from galaxy_cli.core.tool import run_tool
 
@@ -1607,6 +1731,12 @@ class TestWorkflow:
         from galaxy_cli.core.workflow import run_workflow
 
         client = self._mock_client()
+        client.get.return_value = {
+            "id": "w1",
+            "name": "RNA-seq",
+            "steps": {"0": {"id": "s0", "type": "data_input", "tool_inputs": {}}},
+            "inputs": {"0": {"label": "Input Dataset", "value": ""}},
+        }
         client.post.return_value = {"id": "inv1", "state": "new", "history_id": "h1"}
         result = run_workflow(client, "w1", history_id="h1", inputs={"0": "d1"})
         assert result["status"] == "invoked"
@@ -1616,6 +1746,12 @@ class TestWorkflow:
         from galaxy_cli.core.workflow import run_workflow
 
         client = self._mock_client()
+        client.get.return_value = {
+            "id": "w1",
+            "name": "Collection Workflow",
+            "steps": {"0": {"id": "s0", "type": "data_collection_input", "tool_inputs": {}}},
+            "inputs": {"0": {"label": "Reads", "value": ""}},
+        }
         client.post.return_value = {"id": "inv1", "state": "new", "history_id": "h1"}
 
         run_workflow(
@@ -1631,11 +1767,55 @@ class TestWorkflow:
             "id": "f9cad7b01a4721358dba0ff950c535fa",
         }
 
+    def test_run_workflow_rejects_unknown_input_before_submit(self):
+        from galaxy_cli.core.workflow import run_workflow
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "w1",
+            "name": "RNA-seq",
+            "steps": {"0": {"id": "s0", "type": "data_input", "tool_inputs": {}}},
+            "inputs": {"0": {"label": "Input Dataset", "value": ""}},
+        }
+
+        with pytest.raises(GalaxyBackendError) as exc:
+            run_workflow(client, "w1", history_id="h1", inputs={"99": "d1"})
+
+        assert exc.value.category == "invalid_request"
+        assert "Unknown workflow input '99'" in str(exc.value)
+        client.post.assert_not_called()
+
+    def test_run_workflow_rejects_dataset_for_collection_input(self):
+        from galaxy_cli.core.workflow import run_workflow
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+        client = self._mock_client()
+        client.get.return_value = {
+            "id": "w1",
+            "name": "Collection Workflow",
+            "steps": {"0": {"id": "s0", "type": "data_collection_input", "tool_inputs": {}}},
+            "inputs": {"0": {"label": "Reads", "value": ""}},
+        }
+
+        with pytest.raises(GalaxyBackendError) as exc:
+            run_workflow(client, "w1", history_id="h1", inputs={"0": "hda:dataset-1"})
+
+        assert exc.value.category == "invalid_request"
+        assert "expects a dataset collection" in str(exc.value)
+        client.post.assert_not_called()
+
     def test_run_workflow_rejects_unknown_explicit_source_prefix(self):
         from galaxy_cli.core.workflow import run_workflow
         from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
 
         client = self._mock_client()
+        client.get.return_value = {
+            "id": "w1",
+            "name": "RNA-seq",
+            "steps": {"0": {"id": "s0", "type": "data_input", "tool_inputs": {}}},
+            "inputs": {"0": {"label": "Input Dataset", "value": ""}},
+        }
 
         with pytest.raises(GalaxyBackendError) as exc:
             run_workflow(client, "w1", history_id="h1", inputs={"0": "foo:abc123"})
@@ -1805,6 +1985,26 @@ class TestInvocation:
         assert result["invocation_state"] == "scheduled"
         assert result["waited_seconds"] == 1
         assert result["jobs"][0]["id"] == "j1"
+
+    def test_wait_for_invocation_accepts_completed_state_with_finished_jobs(self):
+        from galaxy_cli.core.invocation import wait_for_invocation
+
+        client = self._mock_client()
+        client.get.side_effect = [
+            {
+                "id": "inv1",
+                "state": "completed",
+                "steps": [{"id": "s1", "order_index": 0, "state": "scheduled", "job_id": "j1"}],
+            },
+            {"id": "j1", "state": "ok", "exit_code": 0},
+        ]
+
+        result = wait_for_invocation(client, "inv1", max_wait=2, poll_interval=1)
+
+        assert result["state"] == "ok"
+        assert result["invocation_state"] == "completed"
+        assert result["waited_seconds"] == 0
+        assert result["jobs"] == [{"id": "j1", "state": "ok", "exit_code": 0}]
 
     def test_wait_for_invocation_does_not_return_ok_before_scheduling_finishes(self):
         from galaxy_cli.core.invocation import wait_for_invocation

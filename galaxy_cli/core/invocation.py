@@ -4,7 +4,7 @@ import time
 
 
 _INVOCATION_FAILURE_STATES = {"cancelled", "failed", "error"}
-_INVOCATION_SUCCESS_STATE = "scheduled"
+_INVOCATION_SUCCESS_STATES = {"scheduled", "completed"}
 _FAILED_STEP_STATES = {"failed", "error", "cancelled"}
 _JOB_FAILURE_STATES = {"error", "deleted", "paused"}
 _JOB_TERMINAL_STATES = {"ok"} | _JOB_FAILURE_STATES
@@ -97,7 +97,7 @@ def wait_for_invocation(client, invocation_id, max_wait=1800, poll_interval=10):
             }
 
         job_ids = [step.get("job_id") for step in steps if step.get("job_id")]
-        if state == _INVOCATION_SUCCESS_STATE and not steps:
+        if state in _INVOCATION_SUCCESS_STATES and not steps:
             return {
                 "id": invocation_id,
                 "state": "ok",
@@ -126,7 +126,7 @@ def wait_for_invocation(client, invocation_id, max_wait=1800, poll_interval=10):
                     "failed_jobs": failed_jobs,
                 }
 
-            if state == _INVOCATION_SUCCESS_STATE and all(
+            if state in _INVOCATION_SUCCESS_STATES and all(
                 job["state"] in _JOB_TERMINAL_STATES for job in jobs
             ):
                 return {

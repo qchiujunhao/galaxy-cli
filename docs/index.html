@@ -33,6 +33,7 @@
         <a href="#agent-skill">Agent skill</a>
         <a href="#quickstart">Quickstart</a>
         <a href="#inputs">Inputs</a>
+        <a href="#validation">Validation</a>
         <a href="#examples">Examples</a>
         <a href="#commands">Commands</a>
         <a href="#release">Release</a>
@@ -162,6 +163,11 @@ galaxy-cli tool run "$FASTQC_TOOL" \
             payload to Galaxy's native form before submission.
           </p>
           <p>
+            Optional repeat blocks with <code>min: 0</code> can be omitted. If
+            a repeat item is supplied, its required child inputs still need
+            valid values.
+          </p>
+          <p>
             Current IUC MultiQC FastQC inputs use
             <code>results -> software_cond -> output</code>. For FastQC, pass
             the raw data output, not the HTML report.
@@ -188,6 +194,41 @@ galaxy-cli tool run "$FASTQC_TOOL" \
   "flat": true,
   "export": true
 }</code></pre>
+      </section>
+
+      <section class="band split" id="validation">
+        <div>
+          <p class="eyebrow">Pre-submission validation</p>
+          <h2>Catch payload mistakes before jobs start</h2>
+          <p>
+            <code>galaxy-cli tool run</code> and
+            <code>galaxy-cli workflow run</code> validate obvious input
+            problems before posting to Galaxy. The checks catch unknown input
+            names, missing required dataset or collection inputs, invalid
+            dataset-vs-collection prefixes, and simple select, boolean,
+            integer, and float value errors.
+          </p>
+          <p>
+            Use <code>--dry-run-payload</code> to validate and print the exact
+            POST body without submission. Use <code>--save-payload</code> to
+            keep the validated request body alongside a real submission.
+          </p>
+        </div>
+        <pre><code>galaxy-cli tool run cat1 \
+  --history-id "$HID" \
+  -i input1="$DATASET_ID" \
+  --dry-run-payload
+
+galaxy-cli workflow run "$WF" \
+  --history-id "$HID" \
+  -i 0="$DATASET_ID" \
+  --dry-run-payload
+
+galaxy-cli workflow run "$WF" \
+  --history-id "$HID" \
+  -i 0="$DATASET_ID" \
+  --save-payload workflow_payload.json \
+  --wait</code></pre>
       </section>
 
       <section class="band" id="examples">
@@ -239,6 +280,11 @@ EOF
 
 galaxy-cli tool run "$FASTQC_TOOL" \
   --history-id "$HID" \
+  --inputs-json fastqc_inputs.json \
+  --dry-run-payload
+
+galaxy-cli tool run "$FASTQC_TOOL" \
+  --history-id "$HID" \
   --inputs-json fastqc_inputs.json</code></pre>
           </article>
           <article>
@@ -287,6 +333,10 @@ galaxy-cli history export "$HID"</code></pre>
             <h3>Run and export workflows</h3>
             <pre><code>WF=$(galaxy-cli workflow import workflow.ga | jq -r .id)
 galaxy-cli workflow show "$WF"
+galaxy-cli workflow run "$WF" \
+  --history-id "$HID" \
+  -i 0="$R1" \
+  --dry-run-payload
 galaxy-cli workflow run "$WF" \
   --history-id "$HID" \
   -i 0="$R1" \

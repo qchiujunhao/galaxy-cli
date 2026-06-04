@@ -1356,8 +1356,30 @@ def workflow_export(ctx, workflow_id, output_path):
 @click.option("--wait", is_flag=True, help="Wait for invocation to complete")
 @click.option("--timeout", default=1800, help="Max wait time in seconds (default: 1800)")
 @click.option("--poll-interval", default=10, help="Seconds between status checks (default: 10)")
+@click.option(
+    "--dry-run-payload",
+    is_flag=True,
+    help="Print the exact Galaxy invocation POST body and do not submit the workflow.",
+)
+@click.option(
+    "--save-payload",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    help="Write the exact Galaxy invocation POST body to PATH before submitting.",
+)
 @click.pass_context
-def workflow_run(ctx, workflow_id, history_id, new_history, inputs, wait, timeout, poll_interval):
+def workflow_run(
+    ctx,
+    workflow_id,
+    history_id,
+    new_history,
+    inputs,
+    wait,
+    timeout,
+    poll_interval,
+    dry_run_payload,
+    save_payload,
+):
     """Run a workflow with dataset/collection inputs mapped to steps.
 
     \b
@@ -1378,6 +1400,9 @@ def workflow_run(ctx, workflow_id, history_id, new_history, inputs, wait, timeou
     \b
     --wait blocks until the invocation finishes (default timeout: 1800s).
     Without --wait, returns immediately with the invocation ID.
+
+    Use --dry-run-payload or --save-payload PATH to validate inputs and inspect
+    the exact invocation POST body before submission.
     """
     client = _get_client(ctx)
     hid = history_id
@@ -1389,11 +1414,28 @@ def workflow_run(ctx, workflow_id, history_id, new_history, inputs, wait, timeou
             raise click.UsageError(f"Invalid input format: {inp}. Use step_index=dataset_id")
         k, v = inp.split("=", 1)
         input_dict[k] = v
+    payload = None
+    if dry_run_payload or save_payload:
+        payload = workflow_mod.build_workflow_payload(
+            client,
+            workflow_id,
+            history_id=hid,
+            inputs=input_dict if input_dict else None,
+            new_history_name=new_history,
+        )
+        if save_payload:
+            _write_json_file(save_payload, payload)
+        if dry_run_payload:
+            _output(payload, lambda d: click.echo(json.dumps(d, indent=2, default=str)))
+            return
     result = workflow_mod.run_workflow(
         client, workflow_id, history_id=hid,
         inputs=input_dict if input_dict else None,
         new_history_name=new_history,
+        payload=payload,
     )
+    if save_payload:
+        result["saved_payload"] = save_payload
     if wait and result.get("id"):
         _progress(f"Waiting for invocation {result['id']}...")
         wait_result = invocation_mod.wait_for_invocation(

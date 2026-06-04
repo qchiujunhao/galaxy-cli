@@ -42,15 +42,20 @@ only for the specific command you are about to run.
 - If the task already provides exact tool IDs and parameter JSON, submit the
   tool directly. Do not call `tool show` just to re-discover supplied params.
 - Use `tool run --dry-run-payload` or `--save-payload PATH` when you need to
-  inspect the exact Galaxy POST body before submission.
+  validate inputs and inspect the exact Galaxy POST body before submission.
+- Tool and workflow submissions validate obvious mistakes before POSTing to
+  Galaxy: unknown input names, missing required dataset or collection inputs,
+  invalid dataset-vs-collection source prefixes, and simple select, boolean,
+  integer, and float values.
 - Do not download datasets or reports to local files unless the task explicitly
   asks for a local artifact. Reuse Galaxy dataset ids and collection ids
   directly in downstream tool runs.
 - For `workflow run`, explicit source prefixes must be `hda:`, `hdca:`, or
   `ldda:`. Treat any other prefix as invalid input and fix it before submit.
 - `workflow run --wait` should be trusted only when the invocation reaches
-  Galaxy's `scheduled` state and all discovered jobs are terminal; this avoids
-  reporting success while later steps are still being scheduled.
+  Galaxy's `scheduled` or `completed` state and all discovered jobs are
+  terminal; this avoids reporting success while later steps are still being
+  scheduled.
 
 ## Minimal Command Recipes
 
@@ -128,7 +133,12 @@ Inspect a payload before submitting:
 ```bash
 galaxy-cli tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json --dry-run-payload
 galaxy-cli tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json --save-payload payload.json
+galaxy-cli workflow run "$WF_ID" --history-id "$HID" -i 0="$DATASET_ID" --dry-run-payload
+galaxy-cli workflow run "$WF_ID" --history-id "$HID" -i 0="$DATASET_ID" --save-payload workflow_payload.json
 ```
+
+If dry-run returns `invalid_request`, fix the payload and rerun dry-run. Do not
+submit the job or invocation until the dry-run payload validates.
 
 Check job and output states:
 
@@ -170,6 +180,8 @@ galaxy-cli dataset download "$DATASET_ID" results/output.dat
 - Library dataset: `ldda:DATASET_ID`
 - Boolean: `true` or `false`
 - Conditional or repeat params: prefer nested JSON in `--inputs-json`.
+- Optional repeat blocks with `min: 0` can be omitted. If a repeat item is
+  supplied, its required child inputs still need valid values.
 - Flattened conditional paths use pipes when needed, for example
   `single_paired|paired_input`.
 - Repeated and conditional inputs should mirror `galaxy-cli tool show TOOL_ID`.

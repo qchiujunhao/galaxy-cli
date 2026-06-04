@@ -606,6 +606,95 @@ class TestCli:
             payload=payload,
         )
 
+    def test_workflow_run_dry_run_payload_outputs_post_body(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        client = object()
+        payload = {
+            "workflow_id": "wf-1",
+            "history_id": "hist-1",
+            "ds_map": {"0": {"src": "hda", "id": "dataset-1"}},
+        }
+
+        with patch("galaxy_cli.cli._get_client", return_value=client), \
+             patch("galaxy_cli.cli.workflow_mod.build_workflow_payload", return_value=payload) as build, \
+             patch("galaxy_cli.cli.workflow_mod.run_workflow") as run_workflow:
+            result = runner.invoke(
+                cli,
+                [
+                    "--json",
+                    "workflow",
+                    "run",
+                    "wf-1",
+                    "--history-id",
+                    "hist-1",
+                    "-i",
+                    "0=dataset-1",
+                    "--dry-run-payload",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == payload
+        build.assert_called_once_with(
+            client,
+            "wf-1",
+            history_id="hist-1",
+            inputs={"0": "dataset-1"},
+            new_history_name=None,
+        )
+        run_workflow.assert_not_called()
+
+    def test_workflow_run_save_payload_writes_post_body_and_submits(self, tmp_path):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        client = object()
+        payload_path = tmp_path / "workflow-payload.json"
+        payload = {
+            "workflow_id": "wf-1",
+            "history_id": "hist-1",
+            "ds_map": {"0": {"src": "hda", "id": "dataset-1"}},
+        }
+        run_result = {
+            "id": "inv-1",
+            "workflow_id": "wf-1",
+            "history_id": "hist-1",
+            "state": "new",
+            "status": "invoked",
+        }
+
+        with patch("galaxy_cli.cli._get_client", return_value=client), \
+             patch("galaxy_cli.cli.workflow_mod.build_workflow_payload", return_value=payload), \
+             patch("galaxy_cli.cli.workflow_mod.run_workflow", return_value=run_result) as run_workflow:
+            result = runner.invoke(
+                cli,
+                [
+                    "--json",
+                    "workflow",
+                    "run",
+                    "wf-1",
+                    "--history-id",
+                    "hist-1",
+                    "--save-payload",
+                    str(payload_path),
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(payload_path.read_text()) == payload
+        data = json.loads(result.output)
+        assert data["saved_payload"] == str(payload_path)
+        run_workflow.assert_called_once_with(
+            client,
+            "wf-1",
+            history_id="hist-1",
+            inputs=None,
+            new_history_name=None,
+            payload=payload,
+        )
+
     def test_history_update_published_importable_cli(self):
         from galaxy_cli.cli import cli
 

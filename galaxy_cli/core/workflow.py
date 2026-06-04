@@ -123,8 +123,123 @@ def export_workflow(client, workflow_id, output_path=None):
     return info
 
 
+def _validation_error(message, suggestion):
+    raise GalaxyBackendError(
+        message,
+        category="invalid_request",
+        exit_code=EXIT_USER_ERROR,
+        suggestion=suggestion,
+    )
+
+
+def _workflow_input_lookup(workflow_info):
+    lookup = {}
+    for step_key, inp in (workflow_info.get("inputs") or {}).items():
+        lookup[str(step_key)] = inp
+        label = inp.get("label")
+        if label:
+            lookup[str(label)] = inp
+    return lookup
+
+
+def _workflow_input_id_lookup(workflow_info):
+    lookup = {}
+    for step_key, inp in (workflow_info.get("inputs") or {}).items():
+        lookup[str(step_key)] = str(step_key)
+        label = inp.get("label")
+        if label:
+            lookup[str(label)] = str(step_key)
+    return lookup
+
+
+def _normalize_workflow_input_ref(step_key, dataset_ref):
+    if isinstance(dataset_ref, dict):
+        return dataset_ref
+    if isinstance(dataset_ref, str) and ":" in dataset_ref:
+        src, dataset_id = dataset_ref.split(":", 1)
+        if src in _WORKFLOW_INPUT_SRCS and dataset_id:
+            return {"src": src, "id": dataset_id}
+        if dataset_id:
+            raise GalaxyBackendError(
+                f"Unsupported dataset source prefix '{src}' for workflow input '{step_key}'.",
+                category="invalid_request",
+                exit_code=EXIT_USER_ERROR,
+                suggestion="Use hda:, hdca:, or ldda: prefixes for explicit workflow inputs.",
+            )
+        return {"src": "hda", "id": dataset_ref}
+    if isinstance(dataset_ref, str) and _GALAXY_ID_RE.match(dataset_ref):
+        return {"src": "hda", "id": dataset_ref}
+    return {"src": "hda", "id": dataset_ref}
+
+
+def validate_workflow_inputs(workflow_info, inputs):
+    """Validate obvious workflow input mistakes before invocation."""
+    inputs = inputs or {}
+    expected = _workflow_input_lookup(workflow_info)
+    if not expected and inputs:
+        return
+    for step_key, dataset_ref in inputs.items():
+        input_info = expected.get(str(step_key))
+        if input_info is None:
+            available = ", ".join(sorted(expected)) or "(none)"
+            _validation_error(
+                f"Unknown workflow input '{step_key}' for workflow '{workflow_info.get('id', '')}'.",
+                f"Run `galaxy-cli workflow show {workflow_info.get('id', 'WORKFLOW_ID')}` and use one of: {available}.",
+            )
+        normalized = _normalize_workflow_input_ref(step_key, dataset_ref)
+        src = normalized.get("src")
+        input_type = input_info.get("input_type")
+        if input_type == "dataset" and src not in {"hda", "ldda"}:
+            _validation_error(
+                f"Workflow input '{step_key}' expects a dataset, but source '{src}' was provided.",
+                "Use hda:DATASET_ID or ldda:LIBRARY_DATASET_ID for dataset workflow inputs.",
+            )
+        if input_type == "collection" and src != "hdca":
+            _validation_error(
+                f"Workflow input '{step_key}' expects a dataset collection, but source '{src}' was provided.",
+                "Use hdca:COLLECTION_ID for collection workflow inputs.",
+            )
+    for step_key, input_info in (workflow_info.get("inputs") or {}).items():
+        if input_info.get("input_type") not in {"dataset", "collection"}:
+            continue
+        if input_info.get("optional", False):
+            continue
+        label = input_info.get("label")
+        if str(step_key) not in inputs and (not label or label not in inputs):
+            _validation_error(
+                f"Missing required workflow input '{step_key}' ({label or 'unlabeled'}).",
+                "Run `galaxy-cli workflow show WORKFLOW_ID` to inspect required inputs, then pass them with -i.",
+            )
+
+
+def build_workflow_payload(client, workflow_id, history_id=None, inputs=None, params=None,
+                           new_history_name=None):
+    """Build and validate the exact POST body for a Galaxy workflow invocation."""
+    payload = {"workflow_id": workflow_id}
+    if new_history_name:
+        payload["history"] = f"hist_name={new_history_name}"
+    elif history_id:
+        payload["history_id"] = history_id
+
+    workflow_info = show_workflow(client, workflow_id)
+    validate_workflow_inputs(workflow_info, inputs or {})
+
+    if inputs:
+        input_id_lookup = _workflow_input_id_lookup(workflow_info)
+        ds_map = {}
+        for step_key, dataset_ref in inputs.items():
+            resolved_step_key = input_id_lookup.get(str(step_key), str(step_key))
+            ds_map[resolved_step_key] = _normalize_workflow_input_ref(step_key, dataset_ref)
+        payload["ds_map"] = ds_map
+
+    if params:
+        payload["parameters"] = params
+
+    return payload
+
+
 def run_workflow(client, workflow_id, history_id=None, inputs=None, params=None,
-                 new_history_name=None):
+                 new_history_name=None, payload=None):
     """Run a workflow.
 
     Args:
@@ -134,41 +249,17 @@ def run_workflow(client, workflow_id, history_id=None, inputs=None, params=None,
         inputs: Dict mapping step input labels/indices to dataset IDs.
         params: Dict mapping step indices to parameter overrides.
         new_history_name: If set, create a new history with this name for outputs.
+        payload: Pre-built workflow invocation payload.
     """
-    payload = {"workflow_id": workflow_id}
-    if new_history_name:
-        payload["history"] = f"hist_name={new_history_name}"
-    elif history_id:
-        payload["history_id"] = history_id
-
-    if inputs:
-        # Convert simple {step_index: dataset_id} to Galaxy API format.
-        # Explicit source prefixes allow dataset collections and library datasets.
-        ds_map = {}
-        for step_key, dataset_ref in inputs.items():
-            if isinstance(dataset_ref, dict):
-                ds_map[str(step_key)] = dataset_ref
-            elif isinstance(dataset_ref, str) and ":" in dataset_ref:
-                src, dataset_id = dataset_ref.split(":", 1)
-                if src in _WORKFLOW_INPUT_SRCS and dataset_id:
-                    ds_map[str(step_key)] = {"src": src, "id": dataset_id}
-                elif dataset_id:
-                    raise GalaxyBackendError(
-                        f"Unsupported dataset source prefix '{src}' for workflow input '{step_key}'.",
-                        category="invalid_request",
-                        exit_code=EXIT_USER_ERROR,
-                        suggestion="Use hda:, hdca:, or ldda: prefixes for explicit workflow inputs.",
-                    )
-                else:
-                    ds_map[str(step_key)] = {"src": "hda", "id": dataset_ref}
-            elif isinstance(dataset_ref, str) and _GALAXY_ID_RE.match(dataset_ref):
-                ds_map[str(step_key)] = {"src": "hda", "id": dataset_ref}
-            else:
-                ds_map[str(step_key)] = {"src": "hda", "id": dataset_ref}
-        payload["ds_map"] = ds_map
-
-    if params:
-        payload["parameters"] = params
+    if payload is None:
+        payload = build_workflow_payload(
+            client,
+            workflow_id,
+            history_id=history_id,
+            inputs=inputs,
+            params=params,
+            new_history_name=new_history_name,
+        )
 
     result = client.post(f"workflows/{workflow_id}/invocations", json_data=payload)
     return {

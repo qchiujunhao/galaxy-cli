@@ -103,6 +103,17 @@ galaxy-cli --human config show
 `galaxy-cli` defaults to compact JSON output. Use `--human` for
 human-readable terminal output.
 
+Tool and workflow submissions validate obvious input mistakes before posting to
+Galaxy, including unknown input names, missing required data inputs, invalid
+dataset-vs-collection source prefixes, and simple select/boolean/numeric value
+errors. Use `--dry-run-payload` to validate and print the exact Galaxy POST
+body without submitting:
+
+```bash
+galaxy-cli tool run TOOL_ID --history-id HIST_ID -i input=DATASET_ID --dry-run-payload
+galaxy-cli workflow run WF_ID --history-id HIST_ID -i 0=DATASET_ID --dry-run-payload
+```
+
 For large dataset uploads, use `--upload-timeout` to control the HTTP POST
 separately from the upload job wait. `GALAXY_CLI_REQUEST_TIMEOUT` controls
 regular API request reads, and `GALAXY_CLI_UPLOAD_TIMEOUT` controls uploads.
