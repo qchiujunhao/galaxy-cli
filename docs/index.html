@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="galaxy-cli is a Python CLI for automating Galaxy bioinformatics histories, datasets, tools, workflows, and jobs from the shell. Install with pip or uv.">
+    <meta name="theme-color" content="#05070f">
     <title>galaxy-cli: Galaxy bioinformatics command-line client</title>
     <link rel="canonical" href="https://qchiujunhao.github.io/galaxy-cli/">
     <script type="application/ld+json">
@@ -38,46 +39,60 @@
         <a href="#commands">Commands</a>
         <a href="#release">Release</a>
       </nav>
-      <a class="button ghost" href="https://github.com/qchiujunhao/galaxy-cli">GitHub repository</a>
+      <a class="button ghost" href="https://github.com/qchiujunhao/galaxy-cli">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.34-1.3-1.7-1.3-1.7-1.06-.72.08-.71.08-.71 1.17.08 1.79 1.2 1.79 1.2 1.04 1.79 2.73 1.27 3.4.97.1-.76.4-1.27.73-1.56-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.7 5.4-5.26 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.2.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
+        GitHub
+      </a>
     </header>
 
     <main>
-      <section class="hero">
-        <div class="hero-copy">
-          <p class="eyebrow">Galaxy automation from the shell</p>
-          <h1>galaxy-cli</h1>
-          <p class="lede">
-            A Python Galaxy command-line client for automating
-            <a href="https://galaxyproject.org/">Galaxy Project</a> histories,
-            datasets, collections, tools, workflows, and jobs via the Galaxy
-            REST API.
-          </p>
-          <div class="actions">
-            <a class="button primary" href="#install">Install</a>
-            <a class="button secondary" href="#quickstart">Run your first job</a>
+      <div class="hero-wrap">
+        <section class="hero">
+          <div class="hero-copy">
+            <p class="eyebrow">Galaxy automation from the shell</p>
+            <h1>galaxy<span class="accent">-cli</span></h1>
+            <p class="lede">
+              A Python Galaxy command-line client for automating
+              <a href="https://galaxyproject.org/">Galaxy Project</a> histories,
+              datasets, collections, tools, workflows, and jobs via the Galaxy
+              REST API.
+            </p>
+            <ul class="badges">
+              <li><b>pip</b>&nbsp;install galaxy-cli</li>
+              <li><b>Python</b>&nbsp;3.9+</li>
+              <li><b>MIT</b>&nbsp;licensed</li>
+              <li><b>Galaxy</b>&nbsp;REST API</li>
+            </ul>
+            <div class="actions">
+              <a class="button primary" href="#install">Install</a>
+              <a class="button secondary" href="#quickstart">Run your first job</a>
+            </div>
           </div>
-        </div>
 
-        <figure class="terminal" aria-label="Terminal showing a galaxy-cli tool run">
-          <div class="terminal-bar">
-            <span></span><span></span><span></span>
-          </div>
-          <pre><code>$ galaxy-cli history create "qc run" | jq -r .id
-bbd44e69cb8906b5...
+          <figure class="terminal" aria-label="Terminal showing a galaxy-cli tool run">
+            <div class="terminal-bar">
+              <span></span><span></span><span></span>
+              <span class="term-title">galaxy-cli — zsh</span>
+            </div>
+            <pre><code><span class="tok-prompt">$</span> <span class="tok-cmd">galaxy-cli</span> history create <span class="tok-str">"qc run"</span> <span class="tok-punc">|</span> jq <span class="tok-flag">-r</span> .id
+<span class="tok-out">bbd44e69cb8906b5...</span>
 
-$ galaxy-cli tool run "$MULTIQC_TOOL" \
-  --history-id "$HID" \
-  --inputs-json multiqc_inputs.json
+<span class="tok-prompt">$</span> <span class="tok-cmd">galaxy-cli</span> tool run <span class="tok-str">"$MULTIQC_TOOL"</span> <span class="tok-punc">\</span>
+  <span class="tok-flag">--history-id</span> <span class="tok-str">"$HID"</span> <span class="tok-punc">\</span>
+  <span class="tok-flag">--inputs-json</span> multiqc_inputs.json
 
-{"jobs":[{"id":"...","state":"ok"}],
- "outputs":[{"name":"MultiQC report","state":"ok"}]}</code></pre>
-        </figure>
-      </section>
+<span class="tok-punc">{</span><span class="tok-key">"jobs"</span><span class="tok-punc">:[{</span><span class="tok-key">"id"</span><span class="tok-punc">:</span><span class="tok-str">"..."</span><span class="tok-punc">,</span><span class="tok-key">"state"</span><span class="tok-punc">:</span><span class="tok-str">"ok"</span><span class="tok-punc">}],</span>
+ <span class="tok-key">"outputs"</span><span class="tok-punc">:[{</span><span class="tok-key">"name"</span><span class="tok-punc">:</span><span class="tok-str">"MultiQC report"</span><span class="tok-punc">,</span><span class="tok-key">"state"</span><span class="tok-punc">:</span><span class="tok-str">"ok"</span><span class="tok-punc">}]}</span></code></pre>
+          </figure>
+        </section>
+      </div>
 
       <section class="band" id="install">
         <div class="section-heading">
-          <p class="eyebrow">Install</p>
-          <h2>Install from PyPI</h2>
+          <div>
+            <p class="eyebrow">Install</p>
+            <h2>Install from PyPI</h2>
+          </div>
         </div>
         <div class="code-grid">
           <div>
@@ -93,8 +108,10 @@ $ galaxy-cli tool run "$MULTIQC_TOOL" \
 
       <section class="band" id="agent-skill">
         <div class="section-heading">
-          <p class="eyebrow">Agent skill</p>
-          <h2>Install command knowledge for Codex or Claude Code</h2>
+          <div>
+            <p class="eyebrow">Agent skill</p>
+            <h2>Install command knowledge for Codex or Claude Code</h2>
+          </div>
         </div>
         <p>
           The Python package includes a bundled <code>galaxy-cli</code> skill
@@ -120,8 +137,10 @@ $ galaxy-cli tool run "$MULTIQC_TOOL" \
 
       <section class="band" id="quickstart">
         <div class="section-heading">
-          <p class="eyebrow">Quickstart</p>
-          <h2>Connect, upload, run</h2>
+          <div>
+            <p class="eyebrow">Quickstart</p>
+            <h2>Connect, upload, run</h2>
+          </div>
         </div>
         <ol class="steps">
           <li>
@@ -131,7 +150,7 @@ export GALAXY_API_KEY=your-api-key
 galaxy-cli config test</code></pre>
           </li>
           <li>
-            <h3>Create a history and upload data</h3>
+            <h3>Create a history, upload data</h3>
             <pre><code>HID=$(galaxy-cli history create "analysis" | jq -r .id)
 FASTQC_TOOL=$(galaxy-cli tool search fastqc --limit 5 | jq -r '.[0].id')
 DS=$(galaxy-cli dataset upload reads.fastq.gz \
@@ -233,10 +252,23 @@ galaxy-cli workflow run "$WF" \
 
       <section class="band" id="examples">
         <div class="section-heading">
-          <p class="eyebrow">Command examples</p>
-          <h2>Common Galaxy tasks</h2>
+          <div>
+            <p class="eyebrow">Command examples</p>
+            <h2>Common Galaxy tasks</h2>
+          </div>
         </div>
         <div class="examples-grid">
+          <article>
+            <h3>Run a one-command task</h3>
+            <pre><code>galaxy-cli task tool "$FASTQC_TOOL" \
+  --history-name "qc $(date +%F)" \
+  --upload input=reads.fastq.gz \
+  --file-type fastqsanger.gz
+
+galaxy-cli task workflow "$WF" \
+  --history-name "workflow run" \
+  --upload 0=reads.fastq.gz</code></pre>
+          </article>
           <article>
             <h3>Discover tools and input names</h3>
             <pre><code>FASTQC_TOOL=$(galaxy-cli tool search fastqc --limit 5 | jq -r '.[0].id')
@@ -348,31 +380,44 @@ galaxy-cli workflow export "$WF" -o workflow.ga</code></pre>
 
       <section class="band" id="commands">
         <div class="section-heading">
-          <p class="eyebrow">Command groups</p>
-          <h2>Core CLI surface</h2>
+          <div>
+            <p class="eyebrow">Command groups</p>
+            <h2>Core CLI surface</h2>
+          </div>
         </div>
         <div class="command-grid">
           <article>
+            <span class="cmd-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="8" x2="20" y2="8"/><circle cx="9" cy="8" r="2.3"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="16" r="2.3"/></svg></span>
             <h3>config</h3>
             <p>Show configuration and test Galaxy connectivity.</p>
           </article>
           <article>
+            <span class="cmd-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
             <h3>history</h3>
             <p>Create, copy, list, inspect, publish, and delete histories.</p>
           </article>
           <article>
+            <span class="cmd-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg></span>
             <h3>dataset</h3>
             <p>Upload, download, show, delete, and inspect datasets.</p>
           </article>
           <article>
+            <span class="cmd-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="M3 13l9 5 9-5"/><path d="M3 18l9 3"/></svg></span>
             <h3>collection</h3>
             <p>Create list, paired, and list-of-pairs collections.</p>
           </article>
           <article>
+            <span class="cmd-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg></span>
+            <h3>task</h3>
+            <p>Create or reuse a history, upload files, and submit a tool or workflow in one command.</p>
+          </article>
+          <article>
+            <span class="cmd-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><line x1="13" y1="15" x2="17" y2="15"/></svg></span>
             <h3>tool</h3>
             <p>Search, inspect, run, wait, and return compact output metadata.</p>
           </article>
           <article>
+            <span class="cmd-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.3"/><circle cx="6" cy="18" r="2.3"/><circle cx="18" cy="12" r="2.3"/><path d="M8.3 6H13a3 3 0 0 1 3 3v.7"/><path d="M8.3 18H13a3 3 0 0 0 3-3v-.7"/></svg></span>
             <h3>workflow</h3>
             <p>List, show, export, run, and monitor Galaxy workflows.</p>
           </article>
@@ -384,9 +429,9 @@ galaxy-cli workflow export "$WF" -o workflow.ga</code></pre>
           <p class="eyebrow">Release flow</p>
           <h2>GitHub Release to PyPI</h2>
           <p>
-            `galaxy-cli` uses a pandas-style release flow: publish a GitHub
-            Release, build artifacts in Actions, attach them to the Release,
-            and publish to PyPI with Trusted Publishing.
+            <code>galaxy-cli</code> uses a pandas-style release flow: publish a
+            GitHub Release, build artifacts in Actions, attach them to the
+            Release, and publish to PyPI with Trusted Publishing.
           </p>
           <a class="button secondary" href="https://github.com/qchiujunhao/galaxy-cli/blob/main/RELEASE.md">Release checklist</a>
         </div>
@@ -400,10 +445,17 @@ galaxy-cli workflow export "$WF" -o workflow.ga</code></pre>
     </main>
 
     <footer class="site-footer">
-      <span>galaxy-cli documentation</span>
-      <a href="https://pypi.org/project/galaxy-cli/">PyPI package</a>
-      <a href="https://github.com/qchiujunhao/galaxy-cli">GitHub repository</a>
-      <a href="https://galaxyproject.org/">Galaxy Project</a>
+      <div class="footer-inner">
+        <span class="footer-brand">
+          <span class="brand-mark" aria-hidden="true">g</span>
+          galaxy-cli
+        </span>
+        <nav class="footer-links" aria-label="Footer">
+          <a href="https://pypi.org/project/galaxy-cli/">PyPI package</a>
+          <a href="https://github.com/qchiujunhao/galaxy-cli">GitHub repository</a>
+          <a href="https://galaxyproject.org/">Galaxy Project</a>
+        </nav>
+      </div>
     </footer>
   </body>
 </html>
