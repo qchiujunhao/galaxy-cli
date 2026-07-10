@@ -254,7 +254,14 @@ class TestUdtE2E:
                 "shell_command": "cat '$(inputs.input.path)' > output.txt",
                 "container": "quay.io/biocontainers/coreutils:9.5--hd590300_0",
                 "inputs": [{"name": "input", "type": "data"}],
-                "outputs": [{"name": "output", "format": "txt"}],
+                "outputs": [
+                    {
+                        "name": "output",
+                        "type": "data",
+                        "format": "txt",
+                        "from_work_dir": "output.txt",
+                    }
+                ],
             }
             result = create_run_udt(
                 client,
