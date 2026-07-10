@@ -13,22 +13,28 @@ only for the specific command you are about to run.
 
 `galaxy-cli` is agent-first. The default path is:
 
-1. Submit each tool with `galaxy-cli tool run ... --inputs-json FILE`.
-2. Let `tool run` wait. Do not add `--no-wait` unless the task explicitly asks
+1. When creating and running a fresh UDT in one task, use
+   `galaxy-cli udt create-run ...`. Use separate `udt create` and `udt run`
+   commands only when intermediate inspection is required.
+2. Submit each regular tool with `galaxy-cli tool run ... --inputs-json FILE`.
+3. Let `tool run` and `udt run` wait. Do not add `--no-wait` unless the task explicitly asks
    for asynchronous submission.
-3. Use the returned `outputs` array for output IDs, state, datatype, and size.
-4. Do not call `job show`, `dataset show`, `collection show`, `dataset list`,
+4. Use the returned `outputs` array for output IDs, state, datatype, and size.
+5. Do not call `job show`, `dataset show`, `collection show`, `dataset list`,
    or `collection list` for routine verification.
-5. Do not call `job show --logs` unless debugging a failed job.
-6. Do not call `tool show` when task files already provide exact tool IDs and
+6. Do not call `job show --logs` unless debugging a failed job.
+7. Do not call `tool show` when task files already provide exact tool IDs and
    parameter JSON.
 
 ## Rules
 
 - Use only `galaxy-cli` for Galaxy actions in this condition.
 - Do not use BioBlend, raw HTTP clients, MCP tools, or Galaxy source code.
-- Do not inspect or print API keys. Use `GALAXY_URL` and `GALAXY_API_KEY` from
-  the environment.
+- Never implement UDT calls with ad hoc Requests, low-level BioBlend calls, or
+  guessed tool-ID prefixes. Use the `udt` commands.
+- Do not inspect or print API keys. Use `GALAXY_URL` with `GALAXY_API_KEY` or
+  `GALAXY_API_KEY_FILE` from the environment. The CLI reads the key file;
+  agents must not read it or place the key in command arguments.
 - Compact JSON output is the default. Use `--human` only when a task needs
   human-readable terminal output.
 - Pass `--history-id` explicitly on every history-scoped command. Do not rely
@@ -37,8 +43,10 @@ only for the specific command you are about to run.
 - Prefer `--inputs-json FILE` for tool runs with conditionals, repeats, or more
   than two parameters.
 - Store large command output in files and extract only needed fields with `jq`.
+- Use `udt create-run --evidence-dir PATH` when full UDT evidence is required;
+  keep compact command JSON on stdout.
 - Safe GET calls retry `429`, `502`, `503`, and `504` automatically. Do not
-  blindly retry `tool run` or `dataset upload` after an unknown submission state.
+  blindly retry create/run/upload commands after an unknown submission state.
 - If the task already provides exact tool IDs and parameter JSON, submit the
   tool directly. Do not call `tool show` just to re-discover supplied params.
 - Use `tool run --dry-run-payload` or `--save-payload PATH` when you need to
@@ -91,6 +99,29 @@ DATASET=$(galaxy-cli dataset upload matrix.tsv --history-id "$HID" --file-type t
 `--timeout` is the upload job wait timeout and also the HTTP upload timeout
 when `--upload-timeout` is not set. `GALAXY_CLI_REQUEST_TIMEOUT` controls
 regular API request reads, and `GALAXY_CLI_UPLOAD_TIMEOUT` controls upload POSTs.
+
+Create and run a fresh user-defined tool in one command:
+
+```bash
+galaxy-cli udt create-run \
+  --representation-json udt.json \
+  --history-id "$HID" \
+  --inputs-json udt-inputs.json > udt-result.json
+```
+
+The representation file is the inner `GalaxyUserTool` JSON object. Dataset and
+collection inputs use native objects such as `{"src":"hda","id":"DATASET_ID"}`
+and `{"src":"hdca","id":"COLLECTION_ID"}`. The command creates exactly one
+UDT, runs the UUID returned by Galaxy, waits, refreshes outputs, and returns job
+and output IDs. Use separate commands only when the created representation must
+be inspected before execution:
+
+```bash
+CREATED=$(galaxy-cli udt create --representation-json udt.json)
+UUID=$(printf '%s' "$CREATED" | jq -r .uuid)
+galaxy-cli udt show "$UUID"
+galaxy-cli udt run "$UUID" --history-id "$HID" --inputs-json udt-inputs.json
+```
 
 Create collections:
 
@@ -147,10 +178,11 @@ jq '{job:.jobs[0], wait_result, outputs}' tool_result.json
 galaxy-cli job show "$JOB" --full
 ```
 
-`tool run` waits by default. In JSON mode, the `outputs` array includes final
-dataset or dataset-collection state/type/size metadata after wait. Do not call
-`job show --full`, `dataset show`, or `collection show` for those outputs
-unless a needed field is missing.
+`tool run` and `udt run` wait by default. In JSON mode, the `outputs` array
+includes final dataset or dataset-collection state/type/size metadata after
+wait. Trust a successful blocking result. Do not immediately repeat
+`job show --full`, `dataset show`, `collection show`, or history-list commands
+unless a required field is missing.
 
 Preview wide datasets compactly:
 

@@ -63,6 +63,10 @@ Set your Galaxy server URL and API key:
 export GALAXY_URL=https://usegalaxy.org
 export GALAXY_API_KEY=your-api-key
 
+# Or use a read-only secret file instead of GALAXY_API_KEY
+unset GALAXY_API_KEY
+export GALAXY_API_KEY_FILE=.secrets/galaxy-api-key
+
 # Or use the config commands
 galaxy-cli config set-url https://usegalaxy.org
 galaxy-cli config set-key your-api-key
@@ -107,7 +111,18 @@ galaxy-cli job show job-id
 # Run a workflow
 galaxy-cli workflow run workflow-id -i 0=dataset-id
 galaxy-cli workflow run workflow-id --history-id abc123 -i 0=dataset-id --dry-run-payload
+
+# Create and run a fresh user-defined tool by UUID
+galaxy-cli udt create-run \
+  --representation-json udt.json \
+  --history-id abc123 \
+  --inputs-json inputs.json
 ```
+
+`udt create-run` creates exactly one tool from the inner `GalaxyUserTool`
+representation, runs the UUID returned by Galaxy, waits for all spawned jobs,
+and returns compact output metadata. Use `--evidence-dir evidence` when full,
+redacted request and response evidence is required.
 
 ### Machine-readable output
 
@@ -140,6 +155,7 @@ galaxy-cli
 | `config` | Server connection settings |
 | `history` | Create, list, show, delete, export histories |
 | `dataset` | Upload, download, show, peek, delete datasets |
+| `udt` | List, show, create, run, and deactivate user-defined tools |
 | `tool` | List, search, show, run tools |
 | `job` | List, show, cancel, wait for jobs |
 | `workflow` | Import, export, list, show, run, delete workflows |

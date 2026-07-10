@@ -47,8 +47,8 @@ def _resolve_cli(name):
 def _has_galaxy_server():
     """Check if a Galaxy server is configured and reachable."""
     url = os.environ.get("GALAXY_URL")
-    key = os.environ.get("GALAXY_API_KEY")
-    if not url or not key:
+    has_key = os.environ.get("GALAXY_API_KEY") or os.environ.get("GALAXY_API_KEY_FILE")
+    if not url or not has_key:
         return False
     try:
         import requests
@@ -78,6 +78,11 @@ def _wait_for_dataset_ready(client, dataset_id, history_id=None, max_wait=180, p
 needs_galaxy = pytest.mark.skipif(
     not _has_galaxy_server(),
     reason="No Galaxy server available (set GALAXY_URL and GALAXY_API_KEY)"
+)
+
+needs_udt = pytest.mark.skipif(
+    not _has_galaxy_server() or os.environ.get("GALAXY_CLI_TEST_UDT") != "1",
+    reason="Live UDT test disabled (set GALAXY_CLI_TEST_UDT=1 with Galaxy credentials)",
 )
 
 
@@ -214,6 +219,65 @@ class TestToolE2E:
             assert detail["name"]
             print(f"\n  Tool: {detail['name']} ({detail['id']})")
             print(f"  Inputs: {len(detail['inputs'])}, Outputs: {len(detail['outputs'])}")
+
+
+@needs_udt
+class TestUdtE2E:
+    def test_create_run_delete_lifecycle(self):
+        from galaxy_cli.core.dataset import upload_dataset
+        from galaxy_cli.core.history import create_history, delete_history
+        from galaxy_cli.core.udt import create_run_udt, delete_udt
+        from galaxy_cli.utils.galaxy_backend import GalaxyClient
+
+        client = GalaxyClient()
+        history = create_history(client, name="CLI-UDT-Lifecycle-Test")
+        source_path = None
+        created_uuid = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w") as source:
+                source.write("udt lifecycle\n")
+                source_path = source.name
+            uploaded = upload_dataset(
+                client,
+                history["id"],
+                source_path,
+                file_type="txt",
+                wait=True,
+                timeout=180,
+                poll_interval=5,
+            )
+            representation = {
+                "class": "GalaxyUserTool",
+                "id": "galaxy-cli-udt-lifecycle",
+                "version": "1.0.0",
+                "name": "galaxy-cli UDT lifecycle",
+                "shell_command": "cat '$(inputs.input.path)' > output.txt",
+                "container": "quay.io/biocontainers/coreutils:9.5--hd590300_0",
+                "inputs": [{"name": "input", "type": "data"}],
+                "outputs": [{"name": "output", "format": "txt"}],
+            }
+            result = create_run_udt(
+                client,
+                representation,
+                history["id"],
+                {"input": {"src": "hda", "id": uploaded["id"]}},
+                timeout=300,
+                poll_interval=5,
+            )
+            created_uuid = result["create"]["uuid"]
+            assert result["jobs"]
+            assert all(job["state"] == "ok" for job in result["jobs"])
+            assert result["outputs"]
+            assert all(output["id"] for output in result["outputs"])
+        finally:
+            if created_uuid:
+                delete_udt(client, created_uuid)
+            delete_history(client, history["id"])
+            if source_path:
+                try:
+                    os.unlink(source_path)
+                except OSError:
+                    pass
 
 
 # ── CLI Subprocess Tests ─────────────────────────────────────────────────

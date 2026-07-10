@@ -48,7 +48,7 @@ Changelog = "https://github.com/qchiujunhao/galaxy-cli/releases"
 include = ["galaxy_cli*"]
 
 [tool.setuptools.package-data]
-"galaxy_cli" = ["skills/*.md"]
+"galaxy_cli" = ["README.md", "skills/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["galaxy_cli/tests"]

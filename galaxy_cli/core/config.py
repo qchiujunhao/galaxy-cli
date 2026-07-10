@@ -2,7 +2,7 @@
 
 import os
 
-from galaxy_cli.utils.galaxy_backend import GalaxyClient
+from galaxy_cli.utils.galaxy_backend import GalaxyClient, read_api_key_file
 
 
 def _mask(key):
@@ -36,9 +36,11 @@ def show_config():
     active = cfg.get("active_profile")
     env_url = os.environ.get("GALAXY_URL")
     env_key = os.environ.get("GALAXY_API_KEY")
+    env_key_file = os.environ.get("GALAXY_API_KEY_FILE")
+    file_key = read_api_key_file(env_key_file) if not env_key and env_key_file else None
 
     url = env_url or GalaxyClient._load_config_value("url")
-    key = env_key or GalaxyClient._load_config_value("api_key")
+    key = env_key or file_key or GalaxyClient._load_config_value("api_key")
 
     if env_url:
         url_source = "env"
@@ -51,6 +53,8 @@ def show_config():
 
     if env_key:
         key_source = "env"
+    elif file_key:
+        key_source = "env_file"
     elif active and cfg.get("profiles", {}).get(active, {}).get("api_key"):
         key_source = f"profile:{active}"
     elif cfg.get("api_key"):

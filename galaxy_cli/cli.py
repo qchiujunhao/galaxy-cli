@@ -21,6 +21,7 @@ from galaxy_cli.core import (
     config as config_mod,
     history as history_mod,
     dataset as dataset_mod,
+    udt as udt_mod,
     tool as tool_mod,
     job as job_mod,
     workflow as workflow_mod,
@@ -280,9 +281,10 @@ def profile_group():
     Resolution order (first match wins, per field):
       1. --url / --api-key flags
       2. GALAXY_URL / GALAXY_API_KEY env vars
-      3. --profile NAME (selected for this command)
-      4. Active profile (set by `profile use`)
-      5. Legacy top-level config
+      3. GALAXY_API_KEY_FILE (API key only)
+      4. --profile NAME (selected for this command)
+      5. Active profile (set by `profile use`)
+      6. Legacy top-level config
 
     \b
     Credentials persist in ~/.galaxy-cli/config.json (mode 0600). No
@@ -855,6 +857,158 @@ def collection_show(ctx, collection_id):
                         f"{sub.get('name', '')} [{sub.get('extension', '?')}]"
                     )
     _output(result, _human)
+
+
+# ── User-Defined Tool Commands ───────────────────────────────────────────
+
+@cli.group("udt")
+def udt_group():
+    """Create, inspect, run, and deactivate Galaxy user-defined tools."""
+
+
+@udt_group.command("list")
+@click.option(
+    "--include-inactive",
+    is_flag=True,
+    help="Include inactive user-defined tools.",
+)
+@click.pass_context
+def udt_list(ctx, include_inactive):
+    """List user-defined tools. Active tools are shown by default."""
+    result = udt_mod.list_udts(_get_client(ctx), include_inactive=include_inactive)
+    _output(result)
+
+
+@udt_group.command("show")
+@click.argument("uuid")
+@click.pass_context
+def udt_show(ctx, uuid):
+    """Show one user-defined tool and its representation."""
+    _output(udt_mod.show_udt(_get_client(ctx), uuid))
+
+
+@udt_group.command("create")
+@click.option(
+    "--representation-json",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON file containing the GalaxyUserTool representation.",
+)
+@click.pass_context
+def udt_create(ctx, representation_json):
+    """Validate and create one user-defined tool."""
+    representation = udt_mod.load_json_object(
+        representation_json, "--representation-json"
+    )
+    result = udt_mod.create_udt(_get_client(ctx), representation)
+    _output(result)
+
+
+@udt_group.command("delete")
+@click.argument("uuid")
+@click.pass_context
+def udt_delete(ctx, uuid):
+    """Deactivate one user-defined tool."""
+    _output(udt_mod.delete_udt(_get_client(ctx), uuid))
+
+
+@udt_group.command("run")
+@click.argument("uuid")
+@click.option("--history-id", required=True, help="Target history ID")
+@click.option(
+    "--inputs-json",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON file containing native Galaxy input references.",
+)
+@click.option(
+    "--wait/--no-wait",
+    default=True,
+    help="Wait for all UDT jobs to finish. Default: --wait.",
+)
+@click.option("--timeout", default=1800, help="Max job wait time in seconds")
+@click.option(
+    "--poll-interval", default=180, help="Seconds between job status checks"
+)
+@click.pass_context
+def udt_run(ctx, uuid, history_id, inputs_json, wait, timeout, poll_interval):
+    """Run an active UDT by UUID through Galaxy's tool execution endpoint."""
+    inputs = udt_mod.load_json_object(inputs_json, "--inputs-json")
+    result = udt_mod.run_udt(
+        _get_client(ctx),
+        uuid,
+        history_id,
+        inputs,
+        wait=wait,
+        timeout=timeout,
+        poll_interval=poll_interval,
+    )
+    for job in result.get("jobs", []):
+        if job.get("id"):
+            session_mod.track_job(job["id"])
+    _output(result)
+
+
+@udt_group.command("create-run")
+@click.option(
+    "--representation-json",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON file containing the GalaxyUserTool representation.",
+)
+@click.option("--history-id", required=True, help="Target history ID")
+@click.option(
+    "--inputs-json",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON file containing native Galaxy input references.",
+)
+@click.option("--timeout", default=1800, help="Max job wait time in seconds")
+@click.option(
+    "--poll-interval", default=180, help="Seconds between job status checks"
+)
+@click.option(
+    "--evidence-dir",
+    type=click.Path(file_okay=False),
+    default=None,
+    help="Write redacted full request, response, job, and output JSON files.",
+)
+@click.pass_context
+def udt_create_run(
+    ctx,
+    representation_json,
+    history_id,
+    inputs_json,
+    timeout,
+    poll_interval,
+    evidence_dir,
+):
+    """Create one UDT, run its returned UUID, wait, and return output IDs."""
+    representation = udt_mod.load_json_object(
+        representation_json, "--representation-json"
+    )
+    inputs = udt_mod.load_json_object(inputs_json, "--inputs-json")
+    evidence = {} if evidence_dir else None
+    client = _get_client(ctx)
+    try:
+        result = udt_mod.create_run_udt(
+            client,
+            representation,
+            history_id,
+            inputs,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            evidence=evidence,
+        )
+    finally:
+        if evidence:
+            udt_mod.write_evidence(
+                evidence_dir, evidence, secrets=(getattr(client, "api_key", None),)
+            )
+    for job in result.get("jobs", []):
+        if job.get("id"):
+            session_mod.track_job(job["id"])
+    _output(result)
 
 
 # ── Tool Commands ────────────────────────────────────────────────────────
@@ -1728,6 +1882,7 @@ def repl(ctx):
         "history":    "Manage histories (list, create, show, delete, use, export)",
         "dataset":    "Manage datasets (list, upload, show, download, peek, delete)",
         "collection": "Manage dataset collections (create, list, show)",
+        "udt":        "Manage user-defined tools (list, show, create, delete, run)",
         "tool":       "Manage/run tools (list, search, show, run)",
         "job":        "Manage jobs (list, show, cancel, wait)",
         "workflow":   "Manage workflows (list, show, import, export, run, delete)",

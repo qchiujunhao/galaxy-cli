@@ -3,7 +3,7 @@
 `galaxy-cli` is a Python CLI and REPL for automating the
 [Galaxy](https://galaxyproject.org/) bioinformatics platform from the shell. It
 wraps the Galaxy REST API for histories, datasets, collections, tools,
-workflows, jobs, and libraries.
+user-defined tools, workflows, jobs, and libraries.
 
 This project was initially generated with `cli-anything` and then refined into
 the standalone `galaxy-cli` package.
@@ -83,6 +83,16 @@ export GALAXY_API_KEY=your-api-key
 galaxy-cli config test
 ```
 
+For secret-file environments, set `GALAXY_API_KEY_FILE` instead. Explicit
+`--api-key` and `GALAXY_API_KEY` values take precedence over the file; the CLI
+reads the file without exposing its contents:
+
+```bash
+export GALAXY_URL=https://usegalaxy.org
+export GALAXY_API_KEY_FILE=.secrets/galaxy-api-key
+galaxy-cli config test
+```
+
 Session state is stored in `~/.galaxy-cli/session.json`. It is intended for a
 single active writer; for parallel automation or multiple concurrent agents,
 pass `--history-id` explicitly instead of relying on shared session state.
@@ -102,6 +112,21 @@ galaxy-cli --human config show
 
 `galaxy-cli` defaults to compact JSON output. Use `--human` for
 human-readable terminal output.
+
+Create and run a fresh Galaxy user-defined tool in one blocking command:
+
+```bash
+galaxy-cli udt create-run \
+  --representation-json udt.json \
+  --history-id HIST_ID \
+  --inputs-json inputs.json
+```
+
+The representation file contains the inner `GalaxyUserTool` object; the CLI
+constructs the API envelope, resolves the returned UUID, submits through the
+portable tool execution endpoint, waits for every spawned job, and returns
+compact job and output metadata. Add `--evidence-dir evidence` to save redacted
+full request and response evidence without expanding stdout.
 
 Tool and workflow submissions validate obvious input mistakes before posting to
 Galaxy, including unknown input names, missing required data inputs, invalid

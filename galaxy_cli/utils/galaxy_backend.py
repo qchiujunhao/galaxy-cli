@@ -79,15 +79,52 @@ def _parse_timeout_seconds(value, label):
     return parsed
 
 
+def read_api_key_file(file_path):
+    """Read a Galaxy API key from a secret file without exposing its value."""
+    path = Path(file_path)
+    try:
+        if not path.exists():
+            raise GalaxyBackendError(
+                "GALAXY_API_KEY_FILE does not exist.",
+                category="auth",
+                exit_code=EXIT_AUTH_ERROR,
+            )
+        if not path.is_file():
+            raise GalaxyBackendError(
+                "GALAXY_API_KEY_FILE is not a file.",
+                category="auth",
+                exit_code=EXIT_AUTH_ERROR,
+            )
+        if not path.stat().st_mode & (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH):
+            raise OSError("file has no read permission bits")
+        api_key = path.read_text().rstrip()
+    except GalaxyBackendError:
+        raise
+    except OSError as exc:
+        raise GalaxyBackendError(
+            "GALAXY_API_KEY_FILE is not readable.",
+            category="auth",
+            exit_code=EXIT_AUTH_ERROR,
+        ) from exc
+    if not api_key:
+        raise GalaxyBackendError(
+            "GALAXY_API_KEY_FILE is empty.",
+            category="auth",
+            exit_code=EXIT_AUTH_ERROR,
+        )
+    return api_key
+
+
 class GalaxyClient:
     """HTTP client for the Galaxy REST API.
 
     Authentication priority (first non-empty wins, per field):
     1. Explicit url/api_key parameters
     2. Environment variables GALAXY_URL / GALAXY_API_KEY
-    3. Selected profile (--profile NAME → profiles[NAME])
-    4. Active profile (config["active_profile"] → profiles[active])
-    5. Legacy top-level url / api_key (older config format)
+    3. Secret file from GALAXY_API_KEY_FILE (API key only)
+    4. Selected profile (--profile NAME → profiles[NAME])
+    5. Active profile (config["active_profile"] → profiles[active])
+    6. Legacy top-level url / api_key (older config format)
     """
 
     def __init__(
@@ -107,10 +144,12 @@ class GalaxyClient:
             or os.environ.get("GALAXY_URL")
             or self._load_config_value("url", profile=profile)
         )
-        self.api_key = (
-            api_key
-            or os.environ.get("GALAXY_API_KEY")
-            or self._load_config_value("api_key", profile=profile)
+        env_api_key = os.environ.get("GALAXY_API_KEY")
+        file_api_key = None
+        if not api_key and not env_api_key and os.environ.get("GALAXY_API_KEY_FILE"):
+            file_api_key = read_api_key_file(os.environ["GALAXY_API_KEY_FILE"])
+        self.api_key = api_key or env_api_key or file_api_key or self._load_config_value(
+            "api_key", profile=profile
         )
         # `timeout` is kept as a backwards-compatible alias for request_timeout.
         raw_request_timeout = (
@@ -316,6 +355,9 @@ class GalaxyClient:
                     msg = str(detail)
             except ValueError:
                 msg = resp.text[:500]
+
+            if self.api_key:
+                msg = str(msg).replace(self.api_key, "[REDACTED]")
 
             status = resp.status_code
             if status in (401, 403):
