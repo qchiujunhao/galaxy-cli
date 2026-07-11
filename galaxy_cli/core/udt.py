@@ -66,6 +66,59 @@ def validate_representation(representation):
     return representation
 
 
+def validate_udt(client, representation, history_id=None):
+    """Run Galaxy UDT build/runtime preflight without creating the UDT."""
+    validate_representation(representation)
+    if not history_id:
+        histories = client.get("histories", params={"limit": 1})
+        history_id = histories[0].get("id") if histories else None
+    if not history_id:
+        raise GalaxyBackendError(
+            "UDT preflight requires an existing history context.",
+            category="invalid_request", error_kind="history_required",
+            exit_code=EXIT_USER_ERROR, submission_state="not_submitted", retry_safe=True,
+        )
+    payload = {"src": "representation", "representation": representation}
+    try:
+        build = client.post(
+            "unprivileged_tools/build", json_data=payload,
+            params={"history_id": history_id},
+        )
+        runtime = client.post("unprivileged_tools/runtime_model", json_data=payload)
+    except GalaxyBackendError as exc:
+        if exc.status_code in {404, 405}:
+            return {
+                "supported": False,
+                "valid": None,
+                "tool_id": representation.get("id", ""),
+                "tool_version": representation.get("version", ""),
+                "reason": "udt_preflight_unsupported",
+            }
+        raise
+    errors = build.get("errors", {}) if isinstance(build, dict) else {}
+    schemas = (
+        runtime.get("components", {}).get("schemas", {})
+        if isinstance(runtime, dict) else {}
+    )
+    input_schema = schemas.get("inputs", {}) if isinstance(schemas, dict) else {}
+    return {
+        "supported": True,
+        "valid": not bool(errors),
+        "tool_id": representation.get("id", ""),
+        "tool_version": representation.get("version", ""),
+        "history_id": history_id,
+        "errors": errors,
+        "runtime_model": {
+            "available": bool(runtime),
+            "schema_count": len(schemas),
+            "input_fields": sorted(
+                (input_schema.get("properties") or {}).keys()
+            ),
+            "required_inputs": input_schema.get("required", []),
+        },
+    }
+
+
 def _compact_udt(info, include_representation=False):
     representation = info.get("representation") or {}
     result = {

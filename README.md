@@ -191,6 +191,55 @@ Validation failures stay compact. They identify the failing JSON path,
 expected type or allowed values, and a short correction example rather than
 printing the complete tool schema.
 
+Use compact discovery when an ID or input shape is not already known:
+
+```bash
+galaxy-cli history contents HISTORY_ID --state ok --type dataset --limit 20
+galaxy-cli history resolve HISTORY_ID --exact-name reads.fastq
+galaxy-cli tool search "cut columns" --input-extension tabular --resolve
+galaxy-cli tool template TOOL_ID
+galaxy-cli tool examples TOOL_ID --limit 2
+galaxy-cli tool validate TOOL_ID --history-id HISTORY_ID --inputs-json inputs.json
+```
+
+`tool validate` uses Galaxy's non-executing build check. If unavailable, it
+returns `supported: false`; it never labels local validation as server
+validation.
+
+Tool search uses stable metadata cache by default. Use `--no-cache` or
+`--refresh-cache` when required. Entries have a creation-time TTL and are
+silently rebuilt when stale or damaged. Give each benchmark replicate an
+independent directory:
+
+```bash
+export GALAXY_CLI_CACHE_DIR=.cache/replicate-01
+```
+
+Do not share it between replicates. Histories, jobs, datasets, UDT results,
+operation outputs, and scientific data are never metadata-cached. Inspect
+cached read-only server support with `galaxy-cli server capabilities`.
+
+## Diagnostics and Collection Resolution
+
+Use progressive diagnostics only after a reported failure:
+
+```bash
+galaxy-cli job diagnose JOB_ID
+galaxy-cli job logs JOB_ID --tail 100
+galaxy-cli job logs JOB_ID --grep 'error|fatal' --context 3 --max-chars 12000
+```
+
+Full logs remain explicitly recoverable with `job logs --full` and the global
+`--output-file` option. Nested collections can be flattened or resolved by a
+stable element path:
+
+```bash
+galaxy-cli collection show COLLECTION_ID --flatten --limit 100
+galaxy-cli collection resolve COLLECTION_ID --element sample/forward
+```
+
+Traversal has cycle, depth, and result limits.
+
 ## User-Defined Tools
 
 The UDT command surface remains stable:
@@ -221,6 +270,50 @@ history verification.
 with 1.4.1. It is not required for normal execution and should not be enabled by
 default.
 
+Validate a representation and runtime model without creating a UDT:
+
+```bash
+galaxy-cli udt validate --representation-json udt.json --history-id HISTORY_ID
+```
+
+The history is build context only. If omitted, the command uses an existing
+history; it does not create a UDT or select a container.
+
+## Workflows, Receipts, and Uploads
+
+Workflow runs now wait by default for scheduling and every spawned job:
+
+```bash
+galaxy-cli workflow template WORKFLOW_ID
+galaxy-cli workflow run WORKFLOW_ID --history-id HISTORY_ID -i 0=hda:DATASET_ID
+```
+
+Use `--no-wait` only for intentional asynchronous submission.
+
+Mutating tool, UDT, workflow, and upload commands write a secret-free receipt.
+Receipts contain payload hashes and known Galaxy IDs, not request bodies or
+API keys:
+
+```bash
+galaxy-cli operation show RECEIPT_ID
+galaxy-cli operation list --state unknown
+galaxy-cli operation resume RECEIPT_ID
+```
+
+Resume only polls known records or continues a known TUS session; it never
+blindly repeats an unknown POST. Override storage with
+`GALAXY_CLI_OPERATION_DIR`.
+
+Dataset upload selects TUS from cached server capabilities by default:
+
+```bash
+galaxy-cli dataset upload reads.fastq --history-id HISTORY_ID
+galaxy-cli dataset upload reads.fastq --history-id HISTORY_ID --upload-backend legacy
+```
+
+Auto fallback is limited to clearly unsupported TUS session creation. An
+interrupted transfer or uncertain fetch submission is recorded, not restarted.
+
 ## Output Modes
 
 Compact, single-line JSON is the default:
@@ -232,6 +325,16 @@ galaxy-cli tool run TOOL_ID --history-id HISTORY_ID --inputs-json inputs.json
 
 Progress is written to stderr so stdout remains one JSON value. Use `--human`
 when interactive prose is preferable.
+
+Bound large results or write the complete redacted value to a file:
+
+```bash
+galaxy-cli --max-items 50 --max-chars 12000 history list
+galaxy-cli --output-file job-logs.json job logs JOB_ID --full
+```
+
+With `--output-file`, stdout contains a compact summary, path, byte count, and
+`truncated` marker; the complete JSON is written to the requested file.
 
 ## Agent Skill
 

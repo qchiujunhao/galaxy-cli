@@ -12,6 +12,8 @@ for the one command you need.
 ## Choose the Operation
 
 - Use `tool run` for regular Galaxy tools.
+- Use `history resolve`, `tool search`, and `tool template` only when an exact
+  content ID or input contract is not already known.
 - Use `udt create-run` when creating and immediately running a new UDT; use
   `udt run` for an existing UDT.
 - Let tool, UDT, upload, and history-copy commands wait by default. Use
@@ -29,7 +31,8 @@ for the one command you need.
   contents calls merely to verify a successful blocking result.
 - Use job logs only to diagnose a reported failure.
 - Never retry a mutating command when `submission_state` is `unknown` or
-  `retry_safe` is false. Resolve the existing request or job IDs first.
+  `retry_safe` is false. Use its operation receipt to resume status checks;
+  never replay the POST.
 - A non-zero timeout or job failure is final for that CLI invocation; do not
   reinterpret it as a successful submission.
 

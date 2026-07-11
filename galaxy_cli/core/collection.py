@@ -65,10 +65,73 @@ def list_collections(client, history_id, limit=50):
     ]
 
 
-def show_collection(client, collection_id):
+def _collection_info(client, collection_id):
+    return client.get(
+        f"dataset_collections/{collection_id}", params={"instance_type": "history"}
+    )
+
+
+def flatten_collection(client, collection_id, limit=100, max_depth=20):
+    """Recursively flatten nested collections with cycle and depth guards."""
+    flattened = []
+    active = set()
+
+    def walk(info, path, depth):
+        current_id = info.get("id", "")
+        if depth > max_depth:
+            raise ValueError(f"Collection nesting exceeds maximum depth {max_depth}")
+        if current_id and current_id in active:
+            raise ValueError(f"Collection cycle detected at {current_id}")
+        if current_id:
+            active.add(current_id)
+        for element in info.get("elements", []) or []:
+            if len(flattened) >= limit:
+                break
+            identifier = str(element.get("element_identifier", ""))
+            element_path = "/".join(filter(None, [path, identifier]))
+            obj = element.get("object") or {}
+            element_type = element.get("element_type", "")
+            if element_type in {"dataset_collection", "hdca"}:
+                nested = obj
+                if not nested.get("elements") and nested.get("id"):
+                    nested = _collection_info(client, nested["id"])
+                walk(nested, element_path, depth + 1)
+            else:
+                flattened.append({
+                    "element_path": element_path,
+                    "id": obj.get("id", ""),
+                    "src": "hda",
+                    "state": obj.get("state", ""),
+                    "extension": obj.get("extension", ""),
+                    "collection_type": info.get("collection_type", ""),
+                })
+        if current_id:
+            active.remove(current_id)
+
+    walk(_collection_info(client, collection_id), "", 0)
+    return {
+        "id": collection_id,
+        "elements": flattened,
+        "limit": limit,
+        "truncated": len(flattened) >= limit,
+    }
+
+
+def resolve_collection_element(client, collection_id, element_path, max_depth=20):
+    result = flatten_collection(client, collection_id, limit=10000, max_depth=max_depth)
+    matches = [item for item in result["elements"] if item["element_path"] == element_path]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Collection element path {element_path!r} matched {len(matches)} elements"
+        )
+    return matches[0]
+
+
+def show_collection(client, collection_id, flatten=False, limit=100, max_depth=20):
     """Show details of a dataset collection including its elements."""
-    info = client.get(f"dataset_collections/{collection_id}",
-                      params={"instance_type": "history"})
+    if flatten:
+        return flatten_collection(client, collection_id, limit=limit, max_depth=max_depth)
+    info = _collection_info(client, collection_id)
     elements = []
     for elem in info.get("elements", []):
         entry = {

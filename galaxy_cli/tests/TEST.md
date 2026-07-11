@@ -18,6 +18,11 @@ already available in the environment.
 | Output normalization | Dataset and collection names, IDs, sources, states, types, sizes, and element counts |
 | Bounded preview | Only the named dataset output is previewed; line count is bounded; collections return an unsupported result without expansion |
 | Tool template cache | URL, server version, exact tool ID, and tool version isolation; refresh, bypass, and corrupt-cache recovery |
+| Discovery | History filters, tool templates/examples/preflight, read-only capabilities, and search I/O/version filters |
+| Diagnostics | Bounded tail/grep context, truncation metadata, and explicit full-log recovery |
+| Collections | Recursive list/pair flattening, stable paths, limits, cycles, and depth protection |
+| Operations | Secret-free receipts, unknown submission handling, status-only resume, and isolated directories |
+| Workflows and uploads | Workflow templates and all-job waits; TUS selection, safe fallback, interruption, and legacy compatibility |
 | Structured validation | JSON path, expected type, allowed values, and a short correction example without returning a full schema |
 | Output discipline | Compact one-line JSON on stdout and progress only on stderr |
 | Secret safety | API keys and supplied secrets never appear in output, exceptions, cache files, fixtures, or recorded snapshots |

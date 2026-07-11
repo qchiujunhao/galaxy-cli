@@ -871,6 +871,7 @@ class TestCli:
                     "hist-1",
                     "--save-payload",
                     str(payload_path),
+                    "--no-wait",
                 ],
             )
 

@@ -4,6 +4,7 @@ import csv
 
 from galaxy_cli.utils.galaxy_backend import (
     EXIT_USER_ERROR,
+    GalaxyClient,
     GalaxyBackendError,
 )
 from galaxy_cli.core.job import wait_for_jobs
@@ -21,17 +22,19 @@ def _upload_submission_error(exc, history_id):
             "output_ids": [],
         }
     )
+    known_submission = getattr(exc, "submission_state", None)
+    known_retry = getattr(exc, "retry_safe", None)
     return GalaxyBackendError(
         str(exc),
         category=exc.category,
-        error_kind=(
+        error_kind=getattr(exc, "error_kind", None) or (
             "upload_submission_rejected" if rejected else "upload_submission_unknown"
         ),
         exit_code=exc.exit_code,
         suggestion=exc.suggestion,
         status_code=status_code,
-        submission_state="not_submitted" if rejected else "unknown",
-        retry_safe=rejected,
+        submission_state=known_submission or ("not_submitted" if rejected else "unknown"),
+        retry_safe=known_retry if known_retry is not None else rejected,
         details=details,
     )
 
@@ -46,10 +49,25 @@ def upload_dataset(
     timeout=1800,
     upload_timeout=None,
     poll_interval=30,
+    upload_backend="auto",
 ):
     """Upload a local file to a Galaxy history."""
+    if upload_backend not in {"auto", "tus", "legacy"}:
+        raise GalaxyBackendError(
+            f"Invalid upload backend: {upload_backend}", category="invalid_request",
+            exit_code=EXIT_USER_ERROR, submission_state="not_submitted", retry_safe=True,
+        )
+    selected_backend = upload_backend
+    if upload_backend == "auto":
+        if isinstance(client, GalaxyClient):
+            from galaxy_cli.core.server import server_capabilities
+            capabilities = server_capabilities(client)
+            selected_backend = "tus" if capabilities["capabilities"].get("tus_upload") else "legacy"
+        else:
+            selected_backend = "legacy"
     try:
-        result = client.upload_file(
+        uploader = client.tus_upload_file if selected_backend == "tus" else client.upload_file
+        result = uploader(
             file_path,
             history_id,
             file_type=file_type,
@@ -57,7 +75,21 @@ def upload_dataset(
             upload_timeout=upload_timeout,
         )
     except GalaxyBackendError as exc:
-        raise _upload_submission_error(exc, history_id) from exc
+        if (
+            upload_backend == "auto" and selected_backend == "tus"
+            and exc.status_code in {404, 405}
+            and getattr(exc, "submission_state", None) in {None, "not_submitted"}
+        ):
+            selected_backend = "legacy"
+            try:
+                result = client.upload_file(
+                    file_path, history_id, file_type=file_type, dbkey=dbkey,
+                    upload_timeout=upload_timeout,
+                )
+            except GalaxyBackendError as fallback_exc:
+                raise _upload_submission_error(fallback_exc, history_id) from fallback_exc
+        else:
+            raise _upload_submission_error(exc, history_id) from exc
     malformed = not isinstance(result, dict)
     if not isinstance(result, dict):
         result = {}
@@ -137,6 +169,7 @@ def upload_dataset(
             "state": ds.get("state", ""),
             "history_id": history_id,
             "file_type": ds.get("extension", file_type),
+            "execution_backend": selected_backend,
         }
         if wait:
             uploaded["wait_results"] = wait_results
@@ -171,8 +204,22 @@ def upload_dataset(
                     "data_type": refreshed.get("data_type", ""),
                     "misc_blurb": refreshed.get("misc_blurb", ""),
                 })
+            uploaded.update({
+                "success": True,
+                "execution_backend": selected_backend,
+                "tool_id": "upload1",
+                "jobs": wait_results,
+                "outputs": [{
+                    "output_name": "output",
+                    "id": uploaded.get("id", ""),
+                    "src": "hda",
+                    "state": uploaded.get("state", ""),
+                    "extension": uploaded.get("file_type", ""),
+                    "file_size": uploaded.get("file_size", 0),
+                }],
+            })
         return uploaded
-    return {"status": "uploaded", "history_id": history_id, "raw": result}
+    return {"status": "uploaded", "history_id": history_id, "execution_backend": selected_backend, "raw": result}
 
 
 def show_dataset(client, dataset_id, history_id=None):

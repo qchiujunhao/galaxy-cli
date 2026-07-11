@@ -1,14 +1,10 @@
 """Tool management — list, search, show, run Galaxy tools."""
 
 import copy
-import hashlib
-import json
-import os
 import re
 import time
 
 from galaxy_cli.utils.galaxy_backend import (
-    DEFAULT_CONFIG_DIR,
     EXIT_SERVER_ERROR,
     EXIT_TIMEOUT,
     EXIT_USER_ERROR,
@@ -17,6 +13,7 @@ from galaxy_cli.utils.galaxy_backend import (
 )
 
 from galaxy_cli.core import job as job_mod
+from galaxy_cli.core import metadata_cache
 
 
 _GALAXY_ID_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
@@ -40,7 +37,7 @@ def _is_batch(value):
 
 def _searchable_text(tool):
     return " ".join(
-        [
+        str(value or "") for value in [
             tool.get("id", ""),
             tool.get("name", ""),
             tool.get("description", ""),
@@ -126,33 +123,8 @@ def _rank_tool_matches(tools, terms):
     return [tool for _, tool in ranked]
 
 
-def _tool_cache_path(client):
-    digest = hashlib.sha256(client.url.encode("utf-8")).hexdigest()[:16]
-    return DEFAULT_CONFIG_DIR / "tool-cache" / f"{digest}.json"
-
-
 def _server_version_key(version):
-    if isinstance(version, dict):
-        return json.dumps(version, sort_keys=True, separators=(",", ":"), default=str)
-    return str(version)
-
-
-def _tool_show_cache_prefix(client, server_version, tool_id):
-    identity = json.dumps(
-        [client.url, server_version, tool_id],
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
-
-
-def _tool_show_cache_path(client, server_version, requested_tool_id, exact_tool_id, tool_version):
-    prefix = _tool_show_cache_prefix(client, server_version, requested_tool_id)
-    version_identity = json.dumps(
-        [exact_tool_id, tool_version],
-        separators=(",", ":"),
-    )
-    suffix = hashlib.sha256(version_identity.encode("utf-8")).hexdigest()[:16]
-    return DEFAULT_CONFIG_DIR / "tool-cache" / "show" / f"{prefix}-{suffix}.json"
+    return version if isinstance(version, (dict, list)) else str(version)
 
 
 def _tool_show_cache_context(client):
@@ -160,104 +132,64 @@ def _tool_show_cache_context(client):
     if not isinstance(getattr(client, "url", None), str):
         return None
     try:
-        server_version = _server_version_key(client.get_version())
+        server_version = _server_version_key(metadata_cache.server_version(client))
     except (AttributeError, GalaxyBackendError):
         return None
     return client.url, server_version
 
 
 def _read_tool_show_cache(client, server_version, requested_tool_id):
-    directory = DEFAULT_CONFIG_DIR / "tool-cache" / "show"
-    prefix = _tool_show_cache_prefix(client, server_version, requested_tool_id)
-    try:
-        candidates = sorted(
-            directory.glob(f"{prefix}-*.json"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
+    alias_key = [client.url, server_version, requested_tool_id]
+    alias = metadata_cache.read("tool-schema-alias", alias_key)
+    if not isinstance(alias, dict):
         return None
-    for path in candidates:
-        try:
-            payload = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        if (
-            payload.get("url") != client.url
-            or payload.get("server_version") != server_version
-            or payload.get("requested_tool_id") != requested_tool_id
-        ):
-            continue
-        result = payload.get("result")
-        if not isinstance(result, dict):
-            continue
-        if (
-            payload.get("exact_tool_id") != result.get("id")
-            or payload.get("tool_version") != result.get("version")
-        ):
-            continue
-        return result
-    return None
+    exact_id = alias.get("exact_tool_id")
+    tool_version = alias.get("tool_version")
+    if not isinstance(exact_id, str) or not isinstance(tool_version, str):
+        return None
+    result = metadata_cache.read(
+        "tool-schema", [client.url, server_version, exact_id, tool_version]
+    )
+    if not isinstance(result, dict):
+        return None
+    if result.get("id") != exact_id or result.get("version", "") != tool_version:
+        return None
+    return result
 
 
 def _write_tool_show_cache(client, server_version, requested_tool_id, result):
-    path = _tool_show_cache_path(
-        client,
-        server_version,
-        requested_tool_id,
-        result.get("id", requested_tool_id),
-        result.get("version", ""),
+    exact_id = result.get("id", requested_tool_id)
+    tool_version = result.get("version", "")
+    path = metadata_cache.write(
+        "tool-schema", [client.url, server_version, exact_id, tool_version], result
     )
-    try:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(path.parent, 0o700)
-        payload = {
-            "url": client.url,
-            "server_version": server_version,
-            "requested_tool_id": requested_tool_id,
-            "exact_tool_id": result.get("id", requested_tool_id),
-            "tool_version": result.get("version", ""),
-            "created_at": time.time(),
-            "result": result,
-        }
-        path.write_text(json.dumps(payload, separators=(",", ":"), default=str))
-        os.chmod(path, 0o600)
-    except OSError:
-        return None
+    metadata_cache.write(
+        "tool-schema-alias",
+        [client.url, server_version, requested_tool_id],
+        {"exact_tool_id": exact_id, "tool_version": tool_version},
+    )
     return path
 
 
-def _read_tool_cache(client):
-    path = _tool_cache_path(client)
-    try:
-        payload = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    tools = payload.get("tools")
-    if not isinstance(tools, list):
-        return None
-    return tools
+def _read_tool_cache(client, server_version):
+    tools = metadata_cache.read("tool-search", [client.url, server_version])
+    return tools if isinstance(tools, list) else None
 
 
-def _write_tool_cache(client, tools):
-    path = _tool_cache_path(client)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    payload = {
-        "url": client.url,
-        "created_at": time.time(),
-        "tools": tools,
-    }
-    path.write_text(json.dumps(payload, separators=(",", ":")))
-    return path
+def _write_tool_cache(client, server_version, tools):
+    return metadata_cache.write("tool-search", [client.url, server_version], tools)
 
 
 def _load_cached_tools(client, refresh_cache=False):
+    server_version = _server_version_key(
+        metadata_cache.server_version(client, refresh=refresh_cache)
+    )
     if not refresh_cache:
-        cached = _read_tool_cache(client)
+        cached = _read_tool_cache(client, server_version)
         if cached is not None:
             return cached
     tools = list_tools(client, resolve=False)
-    _write_tool_cache(client, tools)
+    _write_tool_cache(client, server_version, tools)
     return tools
 
 
@@ -268,6 +200,11 @@ def search_tools(
     resolve=False,
     use_cache=False,
     refresh_cache=False,
+    exact=False,
+    input_extension=None,
+    output_extension=None,
+    version=None,
+    all_versions=False,
 ):
     """Search tools by name or description."""
     query = (query or "").strip()
@@ -277,12 +214,106 @@ def search_tools(
     terms = [term.lower() for term in query.split() if term.strip()]
     if use_cache or refresh_cache:
         all_tools = _load_cached_tools(client, refresh_cache=refresh_cache)
-        return _rank_tool_matches(all_tools, terms)[:limit]
+        matches = _rank_tool_matches(all_tools, terms)
+        if exact:
+            lowered = query.lower()
+            matches = [
+                item for item in matches
+                if item.get("id", "").lower() == lowered
+                or item.get("name", "").lower() == lowered
+            ]
+        if version:
+            matches = [item for item in matches if str(item.get("version", "")) == version]
+        needs_details = resolve or input_extension or output_extension
+        if needs_details:
+            detailed = []
+            candidates = matches if (input_extension or output_extension) else matches[:limit]
+            for item in candidates:
+                info = show_tool(client, item.get("id", ""), use_cache=use_cache)
+                input_extensions = sorted({
+                    extension
+                    for inp in info.get("inputs", [])
+                    for extension in inp.get("extensions", []) or []
+                })
+                output_extensions = sorted({
+                    output.get("format", "") for output in info.get("outputs", [])
+                    if output.get("format")
+                })
+                if input_extension and input_extension not in input_extensions:
+                    continue
+                if output_extension and output_extension not in output_extensions:
+                    continue
+                item = dict(item)
+                item.update({
+                    "exact_tool_id": info.get("id", item.get("id", "")),
+                    "version": info.get("version", item.get("version", "")),
+                    "input_extensions": input_extensions,
+                    "output_extensions": output_extensions,
+                })
+                detailed.append(item)
+            matches = detailed
+        if all_versions:
+            expanded = []
+            for item in matches:
+                versions = client.get(
+                    "tools", params={"tool_id": item.get("id", ""), "in_panel": False}
+                )
+                if isinstance(versions, list) and versions:
+                    expanded.extend(
+                        _normalize_tool_dict(value) if isinstance(value, dict) else _normalize_tool_id(value)
+                        for value in versions
+                    )
+                else:
+                    expanded.append(item)
+            matches = expanded
+        return matches[:limit]
 
     # First try Galaxy's native search behavior.
     direct_results = list_tools(client, query=query, resolve=resolve, limit=limit)
     if direct_results:
-        return direct_results[:limit]
+        matches = direct_results
+        if exact:
+            lowered = query.lower()
+            matches = [
+                item for item in matches
+                if item.get("id", "").lower() == lowered
+                or item.get("name", "").lower() == lowered
+            ]
+        if version:
+            matches = [item for item in matches if str(item.get("version", "")) == version]
+        if input_extension or output_extension:
+            detailed = []
+            for item in matches:
+                info = show_tool(client, item.get("id", ""), use_cache=False)
+                input_extensions = sorted({
+                    extension for inp in info.get("inputs", [])
+                    for extension in inp.get("extensions", []) or []
+                })
+                output_extensions = sorted({
+                    output.get("format", "") for output in info.get("outputs", [])
+                    if output.get("format")
+                })
+                if input_extension and input_extension not in input_extensions:
+                    continue
+                if output_extension and output_extension not in output_extensions:
+                    continue
+                item = dict(item, exact_tool_id=info.get("id", item.get("id", "")),
+                            input_extensions=input_extensions,
+                            output_extensions=output_extensions)
+                detailed.append(item)
+            matches = detailed
+        if all_versions:
+            expanded = []
+            for item in matches:
+                versions = client.get(
+                    "tools", params={"tool_id": item.get("id", ""), "in_panel": False}
+                )
+                expanded.extend(
+                    _normalize_tool_dict(value) if isinstance(value, dict) else _normalize_tool_id(value)
+                    for value in versions or [item]
+                )
+            matches = expanded
+        return matches[:limit]
 
     if len(terms) <= 1:
         return direct_results
@@ -290,6 +321,95 @@ def search_tools(
     # Fallback: keyword AND matching across ID, name, description, and section.
     all_tools = list_tools(client, resolve=False)
     return _rank_tool_matches(all_tools, terms)[:limit]
+
+
+def tool_template(client, tool_id, use_cache=True, refresh_cache=False):
+    """Build a machine-fillable nested input skeleton from compact metadata."""
+    info = show_tool(
+        client, tool_id, use_cache=use_cache, refresh_cache=refresh_cache
+    )
+
+    def value_for(inp):
+        input_type = inp.get("type")
+        if input_type == "data":
+            value = {"src": "hda", "id": "DATASET_ID"}
+            return [value] if inp.get("multiple") else value
+        if input_type == "data_collection":
+            return {"src": "hdca", "id": "COLLECTION_ID"}
+        if input_type in {"repeat", "section"}:
+            nested = {child["name"]: value_for(child) for child in inp.get("inputs", [])}
+            return [nested] if input_type == "repeat" else nested
+        if input_type == "conditional":
+            test = inp.get("test_param") or {}
+            result = {test.get("name", "condition"): value_for(test)}
+            cases = inp.get("cases", [])
+            if cases:
+                result.update({child["name"]: value_for(child) for child in cases[0].get("inputs", [])})
+            return result
+        if inp.get("default") is not None:
+            return inp.get("default")
+        options = inp.get("options", []) or []
+        if options:
+            return options[0].get("value")
+        return None
+
+    return {
+        "tool_id": info.get("id", tool_id),
+        "tool_version": info.get("version", ""),
+        "inputs": {inp.get("name", "input"): value_for(inp) for inp in info.get("inputs", [])},
+    }
+
+
+def tool_examples(client, tool_id, limit=2, max_chars=12000):
+    """Return bounded Galaxy-provided tool test examples."""
+    raw = client.get(f"tools/{tool_id}/test_data")
+    if isinstance(raw, dict):
+        raw = raw.get("tests", raw.get("test_data", []))
+    examples = raw if isinstance(raw, list) else []
+    bounded = []
+    used = 0
+    for example in examples[:limit]:
+        text = str(example)
+        if used + len(text) > max_chars:
+            break
+        bounded.append(example)
+        used += len(text)
+    return {
+        "tool_id": tool_id,
+        "examples": bounded,
+        "count": len(bounded),
+        "truncated": len(bounded) < min(len(examples), limit),
+    }
+
+
+def validate_tool_on_server(client, tool_id, history_id, inputs):
+    """Validate with Galaxy's non-executing tool build endpoint."""
+    tool_info, _, strict_inputs = _prepare_tool_inputs(client, tool_id, inputs)
+    payload = {
+        "history_id": history_id,
+        "tool_version": tool_info.get("version", ""),
+        "inputs": strict_inputs,
+    }
+    try:
+        result = client.post(f"tools/{tool_id}/build", json_data=payload)
+    except GalaxyBackendError as exc:
+        if exc.status_code in {404, 405}:
+            return {
+                "supported": False,
+                "valid": None,
+                "tool_id": tool_info.get("id", tool_id),
+                "tool_version": tool_info.get("version", ""),
+                "reason": "server_side_validation_unsupported",
+            }
+        raise
+    errors = result.get("errors", {}) if isinstance(result, dict) else {}
+    return {
+        "supported": True,
+        "valid": not bool(errors),
+        "tool_id": tool_info.get("id", tool_id),
+        "tool_version": tool_info.get("version", ""),
+        "errors": errors,
+    }
 
 
 def _normalize_input(inp):
@@ -1049,9 +1169,7 @@ def _normalize_legacy_input(name, value, input_types):
 
 def _prepare_tool_inputs(client, tool_id, inputs):
     flat_inputs = _flatten_nested_inputs(inputs or {})
-    # Execution must validate against the live schema. The compact show cache
-    # is an agent-context optimization, not a source of truth for mutations.
-    tool_info = show_tool(client, tool_id, use_cache=False)
+    tool_info = show_tool(client, tool_id, use_cache=True)
     validate_tool_inputs(tool_info, flat_inputs)
     input_types = _collect_input_types(tool_info.get("inputs", []))
     legacy_inputs = {

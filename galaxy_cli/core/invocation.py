@@ -2,11 +2,17 @@
 
 import time
 
+from galaxy_cli.utils.galaxy_backend import (
+    EXIT_SERVER_ERROR,
+    EXIT_TIMEOUT,
+    GalaxyBackendError,
+)
+
 
 _INVOCATION_FAILURE_STATES = {"cancelled", "failed", "error"}
 _INVOCATION_SUCCESS_STATES = {"scheduled", "completed"}
 _FAILED_STEP_STATES = {"failed", "error", "cancelled"}
-_JOB_FAILURE_STATES = {"error", "deleted", "paused"}
+_JOB_FAILURE_STATES = {"error", "deleted", "paused", "failed_metadata"}
 _JOB_TERMINAL_STATES = {"ok"} | _JOB_FAILURE_STATES
 
 
@@ -81,20 +87,21 @@ def wait_for_invocation(client, invocation_id, max_wait=1800, poll_interval=10):
             if step.get("state", "") in _FAILED_STEP_STATES
         ]
         if failed_steps:
-            return {
-                "id": invocation_id,
-                "state": "failed",
-                "invocation_state": state,
-                "waited_seconds": elapsed,
-                "failed_steps": failed_steps,
-            }
+            raise GalaxyBackendError(
+                f"Workflow invocation {invocation_id} has failed steps.",
+                category="job_failed", error_kind="workflow_failed",
+                exit_code=EXIT_SERVER_ERROR, submission_state="submitted", retry_safe=False,
+                details={"request_ids": [invocation_id], "failed_steps": failed_steps,
+                         "job_ids": [step.get("job_id") for step in failed_steps if step.get("job_id")]},
+            )
 
         if state in _INVOCATION_FAILURE_STATES:
-            return {
-                "id": invocation_id,
-                "state": state,
-                "waited_seconds": elapsed,
-            }
+            raise GalaxyBackendError(
+                f"Workflow invocation {invocation_id} failed ({state}).",
+                category="job_failed", error_kind="workflow_failed",
+                exit_code=EXIT_SERVER_ERROR, submission_state="submitted", retry_safe=False,
+                details={"request_ids": [invocation_id], "job_ids": []},
+            )
 
         job_ids = [step.get("job_id") for step in steps if step.get("job_id")]
         if state in _INVOCATION_SUCCESS_STATES and not steps:
@@ -118,13 +125,13 @@ def wait_for_invocation(client, invocation_id, max_wait=1800, poll_interval=10):
 
             failed_jobs = [job for job in jobs if job["state"] in _JOB_FAILURE_STATES]
             if failed_jobs:
-                return {
-                    "id": invocation_id,
-                    "state": "failed",
-                    "invocation_state": state,
-                    "waited_seconds": elapsed,
-                    "failed_jobs": failed_jobs,
-                }
+                raise GalaxyBackendError(
+                    f"Workflow invocation {invocation_id} has failed jobs.",
+                    category="job_failed", error_kind="workflow_failed",
+                    exit_code=EXIT_SERVER_ERROR, submission_state="submitted", retry_safe=False,
+                    details={"request_ids": [invocation_id], "job_ids": job_ids,
+                             "jobs": jobs, "failed_jobs": failed_jobs},
+                )
 
             if state in _INVOCATION_SUCCESS_STATES and all(
                 job["state"] in _JOB_TERMINAL_STATES for job in jobs
@@ -138,8 +145,9 @@ def wait_for_invocation(client, invocation_id, max_wait=1800, poll_interval=10):
                 }
         time.sleep(poll_interval)
         elapsed += poll_interval
-    return {
-        "id": invocation_id,
-        "state": "timeout",
-        "waited_seconds": elapsed,
-    }
+    raise GalaxyBackendError(
+        f"Timed out waiting for workflow invocation {invocation_id}.",
+        category="timeout", error_kind="workflow_timeout", exit_code=EXIT_TIMEOUT,
+        submission_state="submitted", retry_safe=False,
+        details={"request_ids": [invocation_id], "job_ids": [], "waited_seconds": elapsed},
+    )

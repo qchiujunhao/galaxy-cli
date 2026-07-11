@@ -5,6 +5,7 @@ Galaxy is a hard dependency: the CLI is useless without a reachable server.
 """
 
 import json
+import base64
 import os
 import stat
 import time
@@ -542,7 +543,7 @@ class GalaxyClient:
         )
         return self._handle_response(resp)
 
-    def post(self, path, data=None, json_data=None):
+    def post(self, path, data=None, json_data=None, params=None):
         """POST request to Galaxy API."""
         resp = self._request(
             "POST",
@@ -550,6 +551,7 @@ class GalaxyClient:
             headers=self._headers(),
             data=data,
             json=json_data,
+            params=params,
         )
         return self._handle_response(resp)
 
@@ -640,6 +642,151 @@ class GalaxyClient:
                     suggestion="Increase upload timeout or try a smaller file.",
                 ) from exc
         return self._handle_response(resp)
+
+    def tus_upload_file(
+        self, file_path, history_id, file_type="auto", dbkey="?",
+        upload_timeout=None, chunk_size=10**7,
+    ):
+        """Upload through Galaxy's TUS service, then submit the fetch tool once."""
+        file_path = Path(file_path)
+        size = file_path.stat().st_size
+        timeout = upload_timeout or self.upload_timeout
+        metadata = base64.b64encode(file_path.name.encode("utf-8")).decode("ascii")
+        headers = {
+            "x-api-key": self.api_key,
+            "Tus-Resumable": "1.0.0",
+            "Upload-Length": str(size),
+            "Upload-Metadata": f"filename {metadata}",
+        }
+        try:
+            response = requests.post(
+                self._api_url("upload/resumable_upload"), headers=headers,
+                timeout=self._timeout_tuple(timeout), allow_redirects=False,
+            )
+        except requests.RequestException as exc:
+            raise GalaxyBackendError(
+                "TUS upload session creation failed with unknown submission state.",
+                category="connection", error_kind="tus_submission_unknown",
+                exit_code=EXIT_SERVER_ERROR, submission_state="unknown", retry_safe=False,
+            ) from exc
+        if response.status_code not in {200, 201}:
+            return self._handle_response(response)
+        location = response.headers.get("Location", "")
+        if not location:
+            raise GalaxyBackendError(
+                "Galaxy TUS endpoint did not return an upload location.",
+                category="api_error", error_kind="tus_response_invalid",
+                exit_code=EXIT_SERVER_ERROR, submission_state="unknown", retry_safe=False,
+            )
+        upload_url = urljoin(self._api_url("upload/resumable_upload"), location)
+        session_id = upload_url.rstrip("/").rsplit("/", 1)[-1]
+        offset = 0
+        with open(file_path, "rb") as handle:
+            while offset < size:
+                chunk = handle.read(chunk_size)
+                patch_headers = {
+                    "x-api-key": self.api_key,
+                    "Tus-Resumable": "1.0.0",
+                    "Upload-Offset": str(offset),
+                    "Content-Type": "application/offset+octet-stream",
+                }
+                try:
+                    patched = requests.patch(
+                        upload_url, headers=patch_headers, data=chunk,
+                        timeout=self._timeout_tuple(timeout), allow_redirects=False,
+                    )
+                except requests.RequestException as exc:
+                    raise GalaxyBackendError(
+                        "TUS upload interrupted; resume the recorded operation instead of retrying.",
+                        category="connection", error_kind="tus_upload_interrupted",
+                        exit_code=EXIT_SERVER_ERROR, submission_state="submitted", retry_safe=False,
+                        details={"tus_session_id": session_id, "upload_offset": offset},
+                    ) from exc
+                if patched.status_code not in {200, 204}:
+                    self._handle_response(patched)
+                try:
+                    offset = int(patched.headers.get("Upload-Offset", offset + len(chunk)))
+                except ValueError:
+                    offset += len(chunk)
+        payload = {
+            "history_id": history_id,
+            "targets": [{
+                "destination": {"type": "hdas"},
+                "elements": [{
+                    "src": "files", "ext": file_type, "dbkey": dbkey,
+                    "to_posix_lines": True, "space_to_tab": False,
+                    "name": file_path.name,
+                }],
+            }],
+            "files_0|file_data": {"session_id": session_id, "name": file_path.name},
+            "auto_decompress": False,
+        }
+        try:
+            return self.post("tools/fetch", json_data=payload)
+        except GalaxyBackendError as exc:
+            exc.details = dict(exc.details or {}, tus_session_id=session_id, upload_offset=offset)
+            exc.submission_state = "unknown"
+            exc.retry_safe = False
+            raise
+
+    def resume_tus_upload_file(
+        self, file_path, history_id, session_id, file_type="auto", dbkey="?",
+        upload_timeout=None, chunk_size=10**7,
+    ):
+        """Resume an existing TUS session, then submit fetch exactly once."""
+        file_path = Path(file_path)
+        upload_url = self._api_url(f"upload/resumable_upload/{session_id}")
+        timeout = upload_timeout or self.upload_timeout
+        headers = {"x-api-key": self.api_key, "Tus-Resumable": "1.0.0"}
+        try:
+            head = requests.head(
+                upload_url, headers=headers, timeout=self._timeout_tuple(timeout),
+                allow_redirects=False,
+            )
+        except requests.RequestException as exc:
+            raise GalaxyBackendError(
+                "Unable to inspect the existing TUS upload session.",
+                category="connection", error_kind="tus_resume_unavailable",
+                exit_code=EXIT_SERVER_ERROR, submission_state="submitted", retry_safe=False,
+            ) from exc
+        if head.status_code not in {200, 204}:
+            self._handle_response(head)
+        offset = int(head.headers.get("Upload-Offset", 0))
+        with open(file_path, "rb") as handle:
+            handle.seek(offset)
+            while True:
+                chunk = handle.read(chunk_size)
+                if not chunk:
+                    break
+                patch_headers = dict(headers, **{
+                    "Upload-Offset": str(offset),
+                    "Content-Type": "application/offset+octet-stream",
+                })
+                try:
+                    response = requests.patch(
+                        upload_url, headers=patch_headers, data=chunk,
+                        timeout=self._timeout_tuple(timeout), allow_redirects=False,
+                    )
+                except requests.RequestException as exc:
+                    raise GalaxyBackendError(
+                        "TUS upload was interrupted again.", category="connection",
+                        error_kind="tus_upload_interrupted", exit_code=EXIT_SERVER_ERROR,
+                        submission_state="submitted", retry_safe=False,
+                        details={"tus_session_id": session_id, "upload_offset": offset},
+                    ) from exc
+                if response.status_code not in {200, 204}:
+                    self._handle_response(response)
+                offset = int(response.headers.get("Upload-Offset", offset + len(chunk)))
+        payload = {
+            "history_id": history_id,
+            "targets": [{"destination": {"type": "hdas"}, "elements": [{
+                "src": "files", "ext": file_type, "dbkey": dbkey,
+                "to_posix_lines": True, "space_to_tab": False, "name": file_path.name,
+            }]}],
+            "files_0|file_data": {"session_id": session_id, "name": file_path.name},
+            "auto_decompress": False,
+        }
+        return self.post("tools/fetch", json_data=payload)
 
     def download_dataset(self, dataset_id, output_path):
         """Download a dataset to a local file."""

@@ -20,6 +20,22 @@
   preserves the immediate-return behavior from 1.4.1.
 - Add bounded, opt-in output previewing to `tool run` and a server/tool-version
   keyed cache for compact `tool show` input templates.
+- Make `tool search` use a TTL-controlled metadata cache by default and extend
+  the cache to server versions, read-only capabilities, tool panels, exact
+  tool schemas, and datatype mappings. Add `GALAXY_CLI_CACHE_DIR`; corrupt or
+  stale entries are discarded automatically.
+- Add compact discovery commands: `history contents/resolve`, `tool
+  template/examples/validate`, `server capabilities`, `job logs/diagnose`,
+  recursive `collection show --flatten` and `collection resolve`, `udt
+  validate`, and `workflow template`.
+- Make blocking workflow runs wait for scheduling and every spawned job, then
+  return final jobs and outputs with the same non-zero failure/timeout rules.
+- Add secret-free operation receipts and status-only `operation
+  show/list/resume`. Unknown submissions are never replayed.
+- Add TUS resumable uploads with `--upload-backend auto|tus|legacy`; automatic
+  fallback is limited to a clearly unsupported initial TUS endpoint.
+- Add global `--output-file`, `--max-items`, and `--max-chars` output controls
+  while retaining compact single-line JSON on stdout.
 - Reuse the shared wait behavior for UDT execution, including non-zero timeout
   handling. Keep `--evidence-dir` as an explicit debug-only compatibility
   option rather than part of the normal agent workflow.

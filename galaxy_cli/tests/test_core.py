@@ -832,10 +832,9 @@ class TestTool:
         ]
 
     def test_search_tools_cache_reuses_cached_tool_list(self, tmp_path, monkeypatch):
-        from galaxy_cli.core import tool as tool_mod
         from galaxy_cli.core.tool import search_tools
 
-        monkeypatch.setattr(tool_mod, "DEFAULT_CONFIG_DIR", tmp_path)
+        monkeypatch.setenv("GALAXY_CLI_CACHE_DIR", str(tmp_path / "cache"))
         client = self._mock_client()
         client.url = "https://galaxy.example.org/"
         client.get.return_value = [
@@ -2124,6 +2123,7 @@ class TestInvocation:
 
     def test_wait_for_invocation_returns_on_failed_step(self):
         from galaxy_cli.core.invocation import wait_for_invocation
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
 
         client = self._mock_client()
         client.get.return_value = {
@@ -2135,11 +2135,10 @@ class TestInvocation:
             ],
         }
 
-        result = wait_for_invocation(client, "inv1", poll_interval=0)
-        assert result["state"] == "failed"
-        assert result["invocation_state"] == "new"
-        assert len(result["failed_steps"]) == 1
-        assert result["failed_steps"][0]["job_id"] == "j2"
+        with pytest.raises(GalaxyBackendError) as exc:
+            wait_for_invocation(client, "inv1", poll_interval=0)
+        assert exc.value.error_kind == "workflow_failed"
+        assert exc.value.details["failed_steps"][0]["job_id"] == "j2"
 
     def test_wait_for_invocation_waits_through_scheduled_until_jobs_finish(self):
         from galaxy_cli.core.invocation import wait_for_invocation
@@ -2222,6 +2221,7 @@ class TestInvocation:
 
     def test_wait_for_invocation_returns_on_failed_job(self):
         from galaxy_cli.core.invocation import wait_for_invocation
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
 
         client = self._mock_client()
         client.get.side_effect = [
@@ -2233,20 +2233,20 @@ class TestInvocation:
             {"id": "j1", "state": "error", "exit_code": 1},
         ]
 
-        result = wait_for_invocation(client, "inv1", max_wait=1, poll_interval=1)
-
-        assert result["state"] == "failed"
-        assert result["invocation_state"] == "scheduled"
-        assert result["failed_jobs"][0]["id"] == "j1"
+        with pytest.raises(GalaxyBackendError) as exc:
+            wait_for_invocation(client, "inv1", max_wait=1, poll_interval=1)
+        assert exc.value.details["failed_jobs"][0]["id"] == "j1"
 
     def test_wait_for_invocation_timeout(self):
         from galaxy_cli.core.invocation import wait_for_invocation
+        from galaxy_cli.utils.galaxy_backend import EXIT_TIMEOUT, GalaxyBackendError
 
         client = self._mock_client()
         client.get.return_value = {"id": "inv1", "state": "new", "steps": []}
 
-        result = wait_for_invocation(client, "inv1", max_wait=0, poll_interval=1)
-        assert result["state"] == "timeout"
+        with pytest.raises(GalaxyBackendError) as exc:
+            wait_for_invocation(client, "inv1", max_wait=0, poll_interval=1)
+        assert exc.value.exit_code == EXIT_TIMEOUT
 
 
 # ── Library Tests ────────────────────────────────────────────────────────

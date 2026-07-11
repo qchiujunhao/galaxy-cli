@@ -2,12 +2,18 @@
 
 import json
 import re
+import time
 from pathlib import Path
 
 from galaxy_cli.utils.galaxy_backend import (
+    EXIT_SERVER_ERROR,
+    EXIT_TIMEOUT,
     EXIT_USER_ERROR,
     GalaxyBackendError,
+    get_with_deadline,
 )
+from galaxy_cli.core.job import wait_for_jobs
+from galaxy_cli.core.tool import _job_outputs, refresh_output_details
 
 _GALAXY_ID_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 _WORKFLOW_INPUT_SRCS = {"hda", "hdca", "ldda"}
@@ -92,6 +98,35 @@ def show_workflow(client, workflow_id):
         "tags": info.get("tags", []),
         "version": info.get("version", 0),
         "update_time": info.get("update_time", ""),
+    }
+
+
+def workflow_template(client, workflow_id):
+    """Return a machine-fillable workflow input skeleton and compact guide."""
+    info = show_workflow(client, workflow_id)
+    inputs = {}
+    guide = {}
+    for step_id, inp in info.get("inputs", {}).items():
+        input_type = inp.get("input_type", "")
+        if input_type == "collection":
+            value = {"src": "hdca", "id": "COLLECTION_ID"}
+        elif input_type == "dataset":
+            value = {"src": "hda", "id": "DATASET_ID"}
+        else:
+            value = inp.get("default")
+        inputs[step_id] = value
+        guide[step_id] = {
+            "label": inp.get("label", ""),
+            "type": input_type,
+            "optional": inp.get("optional", False),
+            "collection_type": inp.get("collection_type", ""),
+            "parameter_type": inp.get("parameter_type", ""),
+        }
+    return {
+        "workflow_id": info.get("id", workflow_id),
+        "workflow_version": info.get("version", 0),
+        "inputs": inputs,
+        "parameter_guide": guide,
     }
 
 
@@ -269,6 +304,59 @@ def run_workflow(client, workflow_id, history_id=None, inputs=None, params=None,
         "state": result.get("state", ""),
         "status": "invoked",
     }
+
+
+def wait_for_workflow_run(client, result, timeout=1800, poll_interval=10):
+    """Wait for scheduling and all spawned jobs against one global deadline."""
+    invocation_id = result.get("id", "")
+    history_id = result.get("history_id", "")
+    started = time.monotonic()
+    deadline = started + max(0.0, float(timeout))
+    detail = {}
+    while True:
+        if time.monotonic() >= deadline:
+            raise GalaxyBackendError(
+                f"Timed out waiting for workflow invocation {invocation_id}.",
+                category="timeout", error_kind="workflow_timeout", exit_code=EXIT_TIMEOUT,
+                submission_state="submitted", retry_safe=False,
+                details={"request_ids": [invocation_id], "history_id": history_id, "job_ids": []},
+            )
+        detail = get_with_deadline(client, f"invocations/{invocation_id}", deadline=deadline)
+        state = detail.get("state", "unknown") if isinstance(detail, dict) else "unknown"
+        steps = detail.get("steps", []) if isinstance(detail, dict) else []
+        failed_steps = [step for step in steps if step.get("state") in {"failed", "error", "cancelled"}]
+        if state in {"failed", "error", "cancelled"} or failed_steps:
+            raise GalaxyBackendError(
+                f"Workflow invocation {invocation_id} failed ({state}).",
+                category="job_failed", error_kind="workflow_failed", exit_code=EXIT_SERVER_ERROR,
+                submission_state="submitted", retry_safe=False,
+                details={"request_ids": [invocation_id], "history_id": history_id, "job_ids": [step.get("job_id") for step in steps if step.get("job_id")], "failed_steps": failed_steps},
+            )
+        job_ids = [step.get("job_id") for step in steps if step.get("job_id")]
+        if state in {"scheduled", "completed"}:
+            break
+        time.sleep(min(max(0.0, float(poll_interval)), max(0.0, deadline - time.monotonic())))
+
+    remaining = max(0.0, deadline - time.monotonic())
+    jobs = wait_for_jobs(
+        client, job_ids, timeout=remaining, poll_interval=poll_interval,
+        history_id=history_id, tool_id=f"workflow:{result.get('workflow_id', '')}",
+        request_ids=[invocation_id],
+    ) if job_ids else []
+    job_details = [client.get(f"jobs/{job_id}") for job_id in job_ids]
+    outputs = _job_outputs(job_details)
+    if outputs and history_id:
+        outputs = refresh_output_details(client, history_id, outputs, require_complete=False)
+    final = dict(result)
+    final.update({
+        "success": True,
+        "state": "ok",
+        "execution_backend": "workflow_invocation",
+        "jobs": jobs,
+        "outputs": outputs,
+        "waited_seconds": round(time.monotonic() - started, 3),
+    })
+    return final
 
 
 def delete_workflow(client, workflow_id):

@@ -5,6 +5,7 @@ import time
 from galaxy_cli.utils.galaxy_backend import (
     EXIT_SERVER_ERROR,
     EXIT_TIMEOUT,
+    EXIT_USER_ERROR,
     GalaxyBackendError,
     get_with_deadline,
 )
@@ -80,6 +81,58 @@ def create_history(client, name="Unnamed history"):
         "state": result.get("state", ""),
         "create_time": result.get("create_time", ""),
     }
+
+
+def history_contents(
+    client,
+    history_id,
+    *,
+    name=None,
+    exact_name=None,
+    hid=None,
+    content_type=None,
+    state=None,
+    extension=None,
+    limit=50,
+):
+    """Return compact, locally filtered history contents."""
+    params = {"limit": max(1, int(limit))}
+    raw = client.get(f"histories/{history_id}/contents", params=params)
+    if isinstance(raw, dict):
+        raw = raw.get("contents", [])
+    contents = [_compact_history_content(item) for item in raw if isinstance(item, dict)]
+    if name:
+        needle = name.lower()
+        contents = [item for item in contents if needle in item["name"].lower()]
+    if exact_name is not None:
+        contents = [item for item in contents if item["name"] == exact_name]
+    if hid is not None:
+        contents = [item for item in contents if str(item["hid"]) == str(hid)]
+    if content_type:
+        aliases = {"dataset": "hda", "collection": "hdca"}
+        wanted = aliases.get(content_type, content_type)
+        contents = [item for item in contents if item["src"] == wanted]
+    if state:
+        contents = [item for item in contents if item["state"] == state]
+    if extension:
+        contents = [item for item in contents if item.get("extension") == extension]
+    return contents[:limit]
+
+
+def resolve_history_content(client, history_id, **filters):
+    """Resolve exactly one history item or return structured ambiguity details."""
+    matches = history_contents(client, history_id, **filters)
+    if len(matches) == 1:
+        return matches[0]
+    raise GalaxyBackendError(
+        "No matching history content." if not matches else "History content reference is ambiguous.",
+        category="invalid_request",
+        error_kind="history_content_not_found" if not matches else "history_content_ambiguous",
+        exit_code=EXIT_USER_ERROR,
+        submission_state="not_submitted",
+        retry_safe=True,
+        details={"history_id": history_id, "match_count": len(matches), "matches": matches},
+    )
 
 
 def _compact_history_content(item):

@@ -31,15 +31,17 @@ jobs.
 | --- | --- | --- |
 | Create or copy a history | `POST /api/histories` | `history create`, `history copy` |
 | Inspect copy readiness | `GET /api/histories/{id}/contents` | internal to blocking `history copy` |
-| Upload a dataset | legacy upload form through `POST /api/tools` | `dataset upload` |
+| Upload a dataset | TUS plus `/api/tools/fetch`, or legacy `/api/tools` | `dataset upload` |
 | Run a regular tool strictly | `POST /api/jobs`, then `/api/tool_requests/{id}` | `tool run` |
 | Run a regular tool on an older server | `POST /api/tools` | `tool run --execution-backend legacy` |
 | Inspect a dataset | `GET /api/datasets/{id}` or history contents | `dataset show` |
 | Inspect a collection | history collection contents endpoint | `collection show` |
 | Inspect a job | `GET /api/jobs/{id}` | `job show` |
+| Diagnose a failed job | bounded console output | `job diagnose`, `job logs` |
 | Manage UDTs | `/api/unprivileged_tools` | `udt list`, `show`, `create`, `delete` |
 | Run a UDT | portable tool execution endpoint | `udt run`, `udt create-run` |
 | Invoke a workflow | workflow invocation endpoint | `workflow run` |
+| Inspect capabilities | read-only endpoint probes | `server capabilities` |
 
 ## Execution Contract
 
@@ -109,6 +111,16 @@ Authentication resolution is:
 The key is sent in the `x-api-key` header. Configuration output masks it, and
 known secrets are removed from structured errors. Compact JSON is written as
 one value on stdout; progress belongs on stderr.
+
+Stable server and tool metadata is cached with a creation-time TTL. Cache keys
+include the Galaxy URL and server version; exact tool schemas additionally use
+the exact tool ID and version. `GALAXY_CLI_CACHE_DIR` isolates independent
+runs. Runtime histories, jobs, datasets, UDT results, and scientific data are
+not cached.
+
+Mutating operations return a secret-free receipt containing a request hash,
+submission state, and known IDs. `operation resume` may poll known records or
+continue an interrupted TUS session, but it never repeats an unknown POST.
 
 ## Agent Operating Rules
 

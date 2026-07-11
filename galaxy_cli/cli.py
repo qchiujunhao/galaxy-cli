@@ -4,6 +4,7 @@ Provides stateful CLI and REPL access to a running Galaxy server via its REST AP
 """
 
 import json
+import os
 import sys
 import shlex
 
@@ -29,6 +30,8 @@ from galaxy_cli.core import (
     library as library_mod,
     session as session_mod,
     skill as skill_mod,
+    server as server_mod,
+    operation as operation_mod,
 )
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -39,6 +42,9 @@ _ROOT_OPTIONS_WITH_VALUES = {
     "--profile",
     "--history-id",
     "--request-timeout",
+    "--output-file",
+    "--max-items",
+    "--max-chars",
 }
 
 def _resolve_json_mode(json_mode):
@@ -95,12 +101,62 @@ def _output(data, human_func=None):
     """
     root_obj = _current_root_obj()
     data = _redact_cli_value(data, root_obj)
+    output_file = root_obj.get("output_file")
+    if output_file:
+        _write_json_file(output_file, data)
+        summary = {
+            "success": data.get("success", True) if isinstance(data, dict) else True,
+            "state": data.get("state", "complete") if isinstance(data, dict) else "complete",
+            "output_file": output_file,
+            "bytes": os.path.getsize(output_file),
+            "truncated": True,
+        }
+        if isinstance(data, dict):
+            for key in ("id", "history_id", "tool_id", "workflow_id"):
+                if data.get(key):
+                    summary[key] = data[key]
+        click.echo(json.dumps(summary, separators=(",", ":"), default=str))
+        return
+    data, truncated = _limit_output(
+        data, root_obj.get("max_items"), root_obj.get("max_chars")
+    )
+    if truncated and isinstance(data, dict):
+        data["truncated"] = True
     if _json_mode_enabled():
         click.echo(json.dumps(data, separators=(",", ":"), default=str))
     elif human_func:
         human_func(data)
     else:
         click.echo(json.dumps(data, separators=(",", ":"), default=str))
+
+
+def _limit_output(value, max_items=None, max_chars=None):
+    """Apply simple recursive bounds without an extra query-language dependency."""
+    truncated = False
+    if isinstance(value, dict):
+        result = {}
+        items = list(value.items())
+        if max_items is not None and len(items) > max_items:
+            items = items[:max_items]
+            truncated = True
+        for key, item in items:
+            result[key], child_truncated = _limit_output(item, max_items, max_chars)
+            truncated = truncated or child_truncated
+        return result, truncated
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+        if max_items is not None and len(items) > max_items:
+            items = items[:max_items]
+            truncated = True
+        result = []
+        for item in items:
+            bounded, child_truncated = _limit_output(item, max_items, max_chars)
+            result.append(bounded)
+            truncated = truncated or child_truncated
+        return result, truncated
+    if isinstance(value, str) and max_chars is not None and len(value) > max_chars:
+        return value[:max_chars], True
+    return value, False
 
 
 def _compact_json(data):
@@ -148,6 +204,19 @@ def _redact_cli_text(value, root_obj):
 def _progress(message):
     """Emit progress text without corrupting JSON stdout."""
     click.echo(_redact_cli_text(message, _current_root_obj()), err=True)
+
+
+def _operation_receipt(operation_type, payload, result=None, error=None):
+    receipt = operation_mod.create_receipt(
+        operation_type, payload, result=result, error=error
+    )
+    if error is not None:
+        details = dict(getattr(error, "details", {}) or {})
+        details["operation_receipt"] = receipt["id"]
+        error.details = details
+    elif isinstance(result, dict):
+        result["operation_receipt"] = receipt["id"]
+    return receipt
 
 
 def _write_json_file(path, payload):
@@ -290,9 +359,18 @@ def _attach_output_peek(client, result, output_name, lines):
     default=None,
     help="JSON output (default) or human-readable output",
 )
+@click.option(
+    "--output-file", type=click.Path(dir_okay=False, writable=True), default=None,
+    help="Write the complete redacted JSON result to PATH and print only a summary.",
+)
+@click.option("--max-items", type=click.IntRange(min=1), default=None, help="Bound items in returned lists and objects.")
+@click.option("--max-chars", type=click.IntRange(min=1), default=None, help="Bound characters in returned strings.")
 @click.version_option(__version__, prog_name="galaxy-cli")
 @click.pass_context
-def cli(ctx, url, api_key, profile, history_id, request_timeout, json_mode):
+def cli(
+    ctx, url, api_key, profile, history_id, request_timeout, json_mode,
+    output_file, max_items, max_chars,
+):
     """CLI harness for Galaxy bioinformatics platform.
 
     Connect to a running Galaxy server and manage histories, datasets,
@@ -329,6 +407,9 @@ def cli(ctx, url, api_key, profile, history_id, request_timeout, json_mode):
     ctx.obj["history_id"] = history_id
     ctx.obj["request_timeout"] = request_timeout
     ctx.obj["json_mode"] = json_mode
+    ctx.obj["output_file"] = output_file
+    ctx.obj["max_items"] = max_items
+    ctx.obj["max_chars"] = max_chars
     # Lazily create client — only when a subcommand needs it
     ctx.obj["client"] = None
     if url or api_key or profile:
@@ -345,6 +426,54 @@ def cli(ctx, url, api_key, profile, history_id, request_timeout, json_mode):
 
 
 # ── Config Commands ──────────────────────────────────────────────────────
+
+@cli.group("server")
+def server_group():
+    """Inspect Galaxy server metadata."""
+
+
+@server_group.command("capabilities")
+@click.option("--refresh-cache", is_flag=True)
+@click.option("--cache/--no-cache", "use_cache", default=True)
+@click.pass_context
+def server_capabilities(ctx, refresh_cache, use_cache):
+    """Report cached read-only capability detection."""
+    result = server_mod.server_capabilities(
+        _get_client(ctx), use_cache=use_cache, refresh_cache=refresh_cache
+    )
+    _output(result)
+
+
+@cli.group("operation")
+def operation_group():
+    """Inspect or resume secret-free operation receipts."""
+
+
+@operation_group.command("show")
+@click.argument("receipt_or_id")
+def operation_show(receipt_or_id):
+    """Show one operation receipt by ID or file path."""
+    _output(operation_mod.show_receipt(receipt_or_id))
+
+
+@operation_group.command("list")
+@click.option("--state", type=click.Choice(["unknown", "submitted", "complete", "failed"]), default=None)
+def operation_list(state):
+    """List operation receipts, optionally filtered by state."""
+    _output(operation_mod.list_receipts(state=state))
+
+
+@operation_group.command("resume")
+@click.argument("receipt_or_id")
+@click.option("--timeout", default=1800, type=click.FloatRange(min=0))
+@click.option("--poll-interval", default=5, type=click.FloatRange(min=0))
+@click.pass_context
+def operation_resume(ctx, receipt_or_id, timeout, poll_interval):
+    """Resume status polling or a known interrupted TUS session; never replay a POST."""
+    _output(operation_mod.resume_operation(
+        _get_client(ctx), receipt_or_id, timeout=timeout, poll_interval=poll_interval
+    ))
+
 
 @cli.group("config")
 def config_group():
@@ -572,15 +701,24 @@ def history_copy(ctx, history_id, name, all_datasets, wait, timeout, poll_interv
     client = _get_client(ctx)
     if wait:
         _progress(f"Waiting for copied history contents from {history_id}...")
-    result = history_mod.copy_history(
-        client,
-        history_id,
-        name=name,
-        all_datasets=all_datasets,
-        wait=wait,
-        timeout=timeout,
-        poll_interval=poll_interval,
-    )
+    receipt_payload = {
+        "source_history_id": history_id, "name": name,
+        "all_datasets": all_datasets,
+    }
+    try:
+        result = history_mod.copy_history(
+            client,
+            history_id,
+            name=name,
+            all_datasets=all_datasets,
+            wait=wait,
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+    except GalaxyBackendError as exc:
+        _operation_receipt("history_copy", receipt_payload, error=exc)
+        raise
+    _operation_receipt("history_copy", receipt_payload, result=result)
     session_mod.set_current_history(result["id"], result["name"])
     _output(
         result,
@@ -588,6 +726,47 @@ def history_copy(ctx, history_id, name, all_datasets, wait, timeout, poll_interv
             f"Copied history {d['copied_from_history_id']} to {d['name']} ({d['id']})"
         ),
     )
+
+
+def _history_content_options(function):
+    options = [
+        click.option("--name", default=None, help="Case-insensitive name substring."),
+        click.option("--exact-name", default=None, help="Exact content name."),
+        click.option("--hid", default=None, type=int),
+        click.option("--type", "content_type", type=click.Choice(["dataset", "collection", "hda", "hdca"])),
+        click.option("--state", default=None),
+        click.option("--extension", default=None),
+        click.option("--limit", default=50, type=click.IntRange(min=1)),
+    ]
+    for option in reversed(options):
+        function = option(function)
+    return function
+
+
+@history_group.command("contents")
+@click.argument("history_id")
+@_history_content_options
+@click.pass_context
+def history_contents(ctx, history_id, name, exact_name, hid, content_type, state, extension, limit):
+    """List compact history contents with stable filters."""
+    result = history_mod.history_contents(
+        _get_client(ctx), history_id, name=name, exact_name=exact_name, hid=hid,
+        content_type=content_type, state=state, extension=extension, limit=limit,
+    )
+    _output(result)
+
+
+@history_group.command("resolve")
+@click.argument("history_id")
+@_history_content_options
+@click.pass_context
+def history_resolve(ctx, history_id, name, exact_name, hid, content_type, state, extension, limit):
+    """Resolve filters to exactly one dataset or collection."""
+    result = history_mod.resolve_history_content(
+        _get_client(ctx), history_id, name=name, exact_name=exact_name, hid=hid,
+        content_type=content_type, state=state, extension=extension, limit=limit,
+    )
+    _output(result)
 
 
 @history_group.command("show")
@@ -713,6 +892,10 @@ def dataset_list(ctx, history_id, limit):
 @click.argument("file_path")
 @click.option("--history-id", default=None, help="Target history ID")
 @click.option("--file-type", default="auto", help="Galaxy file type")
+@click.option(
+    "--upload-backend", type=click.Choice(["auto", "tus", "legacy"]),
+    default="auto", show_default=True,
+)
 @click.option("--dbkey", default="?", help="Genome build")
 @click.option(
     "--wait/--no-wait",
@@ -738,6 +921,7 @@ def dataset_upload(
     file_path,
     history_id,
     file_type,
+    upload_backend,
     dbkey,
     wait,
     timeout,
@@ -758,17 +942,30 @@ def dataset_upload(
     """
     client = _get_client(ctx)
     hid = history_id or _require_history(ctx)
-    result = dataset_mod.upload_dataset(
-        client,
-        hid,
-        file_path,
-        file_type=file_type,
-        dbkey=dbkey,
-        wait=wait,
-        timeout=timeout,
-        upload_timeout=upload_timeout if upload_timeout is not None else timeout,
-        poll_interval=poll_interval,
-    )
+    receipt_payload = {
+        "history_id": hid, "file_name": os.path.basename(file_path),
+        "local_path": os.path.abspath(file_path),
+        "file_size": os.path.getsize(file_path) if os.path.exists(file_path) else None,
+        "file_type": file_type,
+        "dbkey": dbkey,
+    }
+    try:
+        result = dataset_mod.upload_dataset(
+            client,
+            hid,
+            file_path,
+            file_type=file_type,
+            dbkey=dbkey,
+            wait=wait,
+            timeout=timeout,
+            upload_timeout=upload_timeout if upload_timeout is not None else timeout,
+            poll_interval=poll_interval,
+            upload_backend=upload_backend,
+        )
+    except GalaxyBackendError as exc:
+        _operation_receipt("upload", receipt_payload, error=exc)
+        raise
+    _operation_receipt("upload", receipt_payload, result=result)
     if result.get("id"):
         session_mod.track_dataset(result["id"])
     _output(result, lambda d: click.echo(f"Uploaded: {d.get('name', file_path)} ({d.get('id', 'pending')})"))
@@ -972,12 +1169,26 @@ def collection_list(ctx, history_id, limit):
 
 @collection_group.command("show")
 @click.argument("collection_id")
+@click.option("--flatten", is_flag=True, help="Recursively return leaf datasets with stable paths.")
+@click.option("--limit", default=100, type=click.IntRange(min=1))
+@click.option("--max-depth", default=20, type=click.IntRange(min=1), hidden=True)
 @click.pass_context
-def collection_show(ctx, collection_id):
+def collection_show(ctx, collection_id, flatten, limit, max_depth):
     """Show collection details including element structure."""
     client = _get_client(ctx)
-    result = collection_mod.show_collection(client, collection_id)
+    result = collection_mod.show_collection(
+        client, collection_id, flatten=flatten, limit=limit, max_depth=max_depth
+    )
     def _human(d):
+        if flatten:
+            for elem in d.get("elements", []):
+                click.echo(
+                    f"  {elem['element_path']}: {elem['src']}:{elem['id']} "
+                    f"[{elem.get('extension', '')}] ({elem.get('state', '')})"
+                )
+            if d.get("truncated"):
+                click.echo("  ... truncated")
+            return
         click.echo(f"Collection: {d['name']} ({d['id']})")
         click.echo(f"  Type: {d['collection_type']}")
         click.echo(f"  Elements: {d['element_count']}")
@@ -999,6 +1210,19 @@ def collection_show(ctx, collection_id):
                         f"{sub.get('name', '')} [{sub.get('extension', '?')}]"
                     )
     _output(result, _human)
+
+
+@collection_group.command("resolve")
+@click.argument("collection_id")
+@click.option("--element", "element_path", required=True, help="Slash-separated nested element path.")
+@click.option("--max-depth", default=20, type=click.IntRange(min=1), hidden=True)
+@click.pass_context
+def collection_resolve(ctx, collection_id, element_path, max_depth):
+    """Resolve one nested collection element path to a dataset reference."""
+    result = collection_mod.resolve_collection_element(
+        _get_client(ctx), collection_id, element_path, max_depth=max_depth
+    )
+    _output(result)
 
 
 # ── User-Defined Tool Commands ───────────────────────────────────────────
@@ -1027,6 +1251,21 @@ def udt_list(ctx, include_inactive):
 def udt_show(ctx, uuid):
     """Show one user-defined tool and its representation."""
     _output(udt_mod.show_udt(_get_client(ctx), uuid))
+
+
+@udt_group.command("validate")
+@click.option(
+    "--representation-json", required=True,
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+)
+@click.option("--history-id", default=None, help="Existing history used as build context.")
+@click.pass_context
+def udt_validate(ctx, representation_json, history_id):
+    """Run Galaxy build/runtime preflight without creating a UDT."""
+    representation = udt_mod.load_json_object(
+        representation_json, "--representation-json"
+    )
+    _output(udt_mod.validate_udt(_get_client(ctx), representation, history_id=history_id))
 
 
 @udt_group.command("create")
@@ -1076,15 +1315,22 @@ def udt_delete(ctx, uuid):
 def udt_run(ctx, uuid, history_id, inputs_json, wait, timeout, poll_interval):
     """Run an active UDT by UUID through Galaxy's tool execution endpoint."""
     inputs = udt_mod.load_json_object(inputs_json, "--inputs-json")
-    result = udt_mod.run_udt(
-        _get_client(ctx),
-        uuid,
-        history_id,
-        inputs,
-        wait=wait,
-        timeout=timeout,
-        poll_interval=poll_interval,
-    )
+    client = _get_client(ctx)
+    receipt_payload = {"uuid": uuid, "history_id": history_id, "inputs": inputs}
+    try:
+        result = udt_mod.run_udt(
+            client,
+            uuid,
+            history_id,
+            inputs,
+            wait=wait,
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+    except GalaxyBackendError as exc:
+        _operation_receipt("udt", receipt_payload, error=exc)
+        raise
+    _operation_receipt("udt", receipt_payload, result=result)
     for job in result.get("jobs", []):
         if job.get("id"):
             session_mod.track_job(job["id"])
@@ -1133,15 +1379,24 @@ def udt_create_run(
     evidence = {} if evidence_dir else None
     client = _get_client(ctx)
     try:
-        result = udt_mod.create_run_udt(
-            client,
-            representation,
-            history_id,
-            inputs,
-            timeout=timeout,
-            poll_interval=poll_interval,
-            evidence=evidence,
-        )
+        receipt_payload = {
+            "representation": representation, "history_id": history_id,
+            "inputs": inputs,
+        }
+        try:
+            result = udt_mod.create_run_udt(
+                client,
+                representation,
+                history_id,
+                inputs,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                evidence=evidence,
+            )
+        except GalaxyBackendError as exc:
+            _operation_receipt("udt", receipt_payload, error=exc)
+            raise
+        _operation_receipt("udt", receipt_payload, result=result)
     finally:
         if evidence:
             udt_mod.write_evidence(
@@ -1183,20 +1438,42 @@ def tool_list(ctx, query, limit):
 @click.argument("query")
 @click.option("--limit", default=25, type=click.IntRange(min=1), help="Maximum matches to return (default: 25)")
 @click.option("--resolve", is_flag=True, help="Resolve string-only hits with extra tool detail requests.")
-@click.option("--cache", "use_cache", is_flag=True, help="Search a locally cached full tool list when available.")
+@click.option("--exact", is_flag=True, help="Match the exact tool ID or name.")
+@click.option("--input-extension", default=None, help="Require a compatible input extension.")
+@click.option("--output-extension", default=None, help="Require a declared output extension.")
+@click.option("--version", default=None, help="Require an exact installed tool version.")
+@click.option("--all-versions", is_flag=True, help="Return installed versions without choosing one.")
+@click.option(
+    "--cache/--no-cache",
+    "use_cache",
+    default=True,
+    help="Use the local versioned tool metadata cache. Default: --cache.",
+)
 @click.option("--refresh-cache", is_flag=True, help="Refresh the local full tool list cache before searching.")
 @click.pass_context
-def tool_search(ctx, query, limit, resolve, use_cache, refresh_cache):
+def tool_search(
+    ctx, query, limit, resolve, exact, input_extension, output_extension,
+    version, all_versions, use_cache, refresh_cache,
+):
     """Search for tools by name or description."""
     client = _get_client(ctx)
-    results = tool_mod.search_tools(
-        client,
-        query,
-        limit=limit,
-        resolve=resolve,
-        use_cache=use_cache or refresh_cache,
-        refresh_cache=refresh_cache,
-    )
+    search_options = {
+        "limit": limit,
+        "resolve": resolve,
+        "use_cache": use_cache,
+        "refresh_cache": refresh_cache,
+    }
+    if exact:
+        search_options["exact"] = True
+    if input_extension:
+        search_options["input_extension"] = input_extension
+    if output_extension:
+        search_options["output_extension"] = output_extension
+    if version:
+        search_options["version"] = version
+    if all_versions:
+        search_options["all_versions"] = True
+    results = tool_mod.search_tools(client, query, **search_options)
     def _human(data):
         if not data:
             click.echo(f"No tools matching '{query}'.")
@@ -1321,6 +1598,46 @@ def tool_show(ctx, tool_id, full, refresh_cache, use_cache):
             for out in d["outputs"]:
                 click.echo(f"    {out['name']} [{out['format']}]: {out['label']}")
     _output(result, _human)
+
+
+@tool_group.command("template")
+@click.argument("tool_id")
+@click.option("--refresh-cache", is_flag=True)
+@click.option("--cache/--no-cache", "use_cache", default=True)
+@click.pass_context
+def tool_template(ctx, tool_id, refresh_cache, use_cache):
+    """Return a machine-fillable nested JSON input skeleton."""
+    result = tool_mod.tool_template(
+        _get_client(ctx), tool_id, use_cache=use_cache, refresh_cache=refresh_cache
+    )
+    _output(result)
+
+
+@tool_group.command("examples")
+@click.argument("tool_id")
+@click.option("--limit", default=2, type=click.IntRange(min=1))
+@click.option("--max-chars", default=12000, type=click.IntRange(min=1))
+@click.pass_context
+def tool_examples(ctx, tool_id, limit, max_chars):
+    """Return bounded Galaxy-provided tool test examples."""
+    _output(tool_mod.tool_examples(_get_client(ctx), tool_id, limit, max_chars))
+
+
+@tool_group.command("validate")
+@click.argument("tool_id")
+@click.option("--history-id", required=True)
+@click.option(
+    "--inputs-json", required=True,
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+)
+@click.pass_context
+def tool_validate(ctx, tool_id, history_id, inputs_json):
+    """Run local and server-side validation without submitting a job."""
+    inputs = udt_mod.load_json_object(inputs_json, "--inputs-json")
+    result = tool_mod.validate_tool_on_server(
+        _get_client(ctx), tool_id, history_id, inputs
+    )
+    _output(result)
 
 
 @tool_group.command("run")
@@ -1498,17 +1815,26 @@ def tool_run(
             return
     if wait:
         _progress(f"Waiting for all jobs from tool {tool_id}...")
-    result = tool_mod.run_tool(
-        client,
-        tool_id,
-        hid,
-        inputs=input_dict,
-        execution_backend=execution_backend,
-        wait=wait,
-        timeout=timeout,
-        poll_interval=poll_interval,
-        plan=plan,
-    )
+    receipt_payload = plan["post_body"] if plan else {
+        "tool_id": tool_id, "history_id": hid, "inputs": input_dict,
+        "execution_backend": execution_backend,
+    }
+    try:
+        result = tool_mod.run_tool(
+            client,
+            tool_id,
+            hid,
+            inputs=input_dict,
+            execution_backend=execution_backend,
+            wait=wait,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            plan=plan,
+        )
+    except GalaxyBackendError as exc:
+        _operation_receipt("tool", receipt_payload, error=exc)
+        raise
+    _operation_receipt("tool", receipt_payload, result=result)
     if save_payload:
         result["saved_payload"] = save_payload
         result["saved_payload_backend"] = plan["execution_backend"]
@@ -1577,6 +1903,33 @@ def job_show(ctx, job_id, full, logs):
         if d.get("stderr"):
             click.echo(f"  Stderr: {d['stderr'][:500]}")
     _output(result, _human)
+
+
+@job_group.command("logs")
+@click.argument("job_id")
+@click.option("--tail", default=100, type=click.IntRange(min=1))
+@click.option("--grep", "pattern", default=None)
+@click.option("--context", default=2, type=click.IntRange(min=0))
+@click.option("--max-chars", default=None, type=click.IntRange(min=1))
+@click.option("--full", is_flag=True, help="Explicitly request complete logs; optionally bound with --max-chars.")
+@click.pass_context
+def job_logs(ctx, job_id, tail, pattern, context, max_chars, full):
+    """Show bounded stdout/stderr with optional matching context."""
+    effective_max_chars = max_chars if max_chars is not None else (None if full else 12000)
+    result = job_mod.job_logs(
+        _get_client(ctx), job_id, tail=tail, pattern=pattern,
+        context=context, max_chars=effective_max_chars, full=full,
+    )
+    _output(result)
+
+
+@job_group.command("diagnose")
+@click.argument("job_id")
+@click.option("--max-chars", default=12000, type=click.IntRange(min=1))
+@click.pass_context
+def job_diagnose(ctx, job_id, max_chars):
+    """Summarize a failed job and bounded error log context."""
+    _output(job_mod.diagnose_job(_get_client(ctx), job_id, max_chars=max_chars))
 
 
 @job_group.command("cancel")
@@ -1673,6 +2026,14 @@ def workflow_show(ctx, workflow_id):
     _output(result, _human)
 
 
+@workflow_group.command("template")
+@click.argument("workflow_id")
+@click.pass_context
+def workflow_template(ctx, workflow_id):
+    """Return a machine-fillable input skeleton and parameter guide."""
+    _output(workflow_mod.workflow_template(_get_client(ctx), workflow_id))
+
+
 @workflow_group.command("import")
 @click.argument("workflow_path")
 @click.pass_context
@@ -1702,7 +2063,7 @@ def workflow_export(ctx, workflow_id, output_path):
 @click.option("--history-id", default=None)
 @click.option("--new-history", default=None, help="Create new history with this name")
 @click.option("--input", "-i", "inputs", multiple=True, help="Step input as step_index=dataset_id")
-@click.option("--wait", is_flag=True, help="Wait for invocation to complete")
+@click.option("--wait/--no-wait", default=True, help="Wait for invocation and every job. Default: --wait.")
 @click.option("--timeout", default=1800, help="Max wait time in seconds (default: 1800)")
 @click.option("--poll-interval", default=10, help="Seconds between status checks (default: 10)")
 @click.option(
@@ -1748,7 +2109,7 @@ def workflow_run(
 
     \b
     --wait blocks until the invocation finishes (default timeout: 1800s).
-    Without --wait, returns immediately with the invocation ID.
+    With --no-wait, returns immediately with the invocation ID.
 
     Use --dry-run-payload or --save-payload PATH to validate inputs and inspect
     the exact invocation POST body before submission.
@@ -1777,20 +2138,28 @@ def workflow_run(
         if dry_run_payload:
             _output(payload, lambda d: click.echo(json.dumps(d, indent=2, default=str)))
             return
-    result = workflow_mod.run_workflow(
-        client, workflow_id, history_id=hid,
-        inputs=input_dict if input_dict else None,
-        new_history_name=new_history,
-        payload=payload,
-    )
+    receipt_payload = payload or {
+        "workflow_id": workflow_id, "history_id": hid,
+        "inputs": input_dict, "new_history_name": new_history,
+    }
+    try:
+        result = workflow_mod.run_workflow(
+            client, workflow_id, history_id=hid,
+            inputs=input_dict if input_dict else None,
+            new_history_name=new_history,
+            payload=payload,
+        )
+    except GalaxyBackendError as exc:
+        _operation_receipt("workflow", receipt_payload, error=exc)
+        raise
     if save_payload:
         result["saved_payload"] = save_payload
     if wait and result.get("id"):
         _progress(f"Waiting for invocation {result['id']}...")
-        wait_result = invocation_mod.wait_for_invocation(
-            client, result["id"], max_wait=timeout, poll_interval=poll_interval,
+        result = workflow_mod.wait_for_workflow_run(
+            client, result, timeout=timeout, poll_interval=poll_interval,
         )
-        result["wait_result"] = wait_result
+    _operation_receipt("workflow", receipt_payload, result=result)
     _output(result, lambda d: click.echo(
         f"Invocation {d['id']} started (state: {d['state']})"
     ))

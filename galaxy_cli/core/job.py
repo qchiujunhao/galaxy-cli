@@ -1,6 +1,7 @@
 """Job management — list, show, cancel, rerun Galaxy jobs."""
 
 import time
+import re
 
 from galaxy_cli.utils.galaxy_backend import (
     EXIT_SERVER_ERROR,
@@ -96,6 +97,79 @@ def rerun_job(client, job_id):
         "id": job_id,
         "tool_id": info.get("id", ""),
         "state_inputs": info.get("state_inputs", {}),
+    }
+
+
+def _console_output(client, job_id):
+    try:
+        raw = client.get(f"jobs/{job_id}/console_output")
+    except GalaxyBackendError as exc:
+        if exc.status_code not in {404, 405}:
+            raise
+        raw = client.get(f"jobs/{job_id}", params={"full": True})
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "stdout": _first_present(raw, ("stdout", "tool_stdout")),
+        "stderr": _first_present(raw, ("stderr", "tool_stderr")),
+    }
+
+
+def job_logs(
+    client, job_id, tail=100, pattern=None, context=2, max_chars=12000, full=False
+):
+    """Return bounded logs while retaining total-size and truncation metadata."""
+    logs = _console_output(client, job_id)
+    result = {"id": job_id, "streams": {}, "max_chars": max_chars}
+    budget = max_chars
+    for stream in ("stdout", "stderr"):
+        text = str(logs.get(stream) or "")
+        lines = text.splitlines()
+        if pattern:
+            regex = re.compile(pattern)
+            indexes = {index for index, line in enumerate(lines) if regex.search(line)}
+            selected = sorted({
+                nearby
+                for index in indexes
+                for nearby in range(max(0, index - context), min(len(lines), index + context + 1))
+            })
+            shown = [lines[index] for index in selected]
+        elif full:
+            shown = lines
+        else:
+            shown = lines[-tail:]
+        rendered = "\n".join(shown)
+        clipped = rendered if budget is None else rendered[:budget]
+        if budget is not None:
+            budget -= len(clipped)
+        result["streams"][stream] = {
+            "text": clipped,
+            "total_chars": len(text),
+            "total_lines": len(lines),
+            "truncated": len(clipped) < len(rendered) or len(shown) < len(lines),
+        }
+    result["truncated"] = any(value["truncated"] for value in result["streams"].values())
+    return result
+
+
+def diagnose_job(client, job_id, max_chars=12000):
+    """Return compact failure context without exposing full logs by default."""
+    info = show_job(client, job_id)
+    logs = job_logs(
+        client,
+        job_id,
+        pattern=r"(?i)(error|exception|failed|fatal|traceback|killed|oom)",
+        context=2,
+        max_chars=max_chars,
+    )
+    return {
+        "id": job_id,
+        "state": info.get("state", ""),
+        "exit_code": info.get("exit_code"),
+        "tool_id": info.get("tool_id", ""),
+        "history_id": info.get("history_id", ""),
+        "error_summary": logs["streams"],
+        "truncated": logs["truncated"],
     }
 
 

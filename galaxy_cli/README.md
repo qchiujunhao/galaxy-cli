@@ -119,6 +119,12 @@ galaxy-cli tool show TOOL_ID --refresh-cache
 galaxy-cli tool show TOOL_ID --no-cache
 ```
 
+`tool search` uses the versioned TTL cache by default. Set a unique
+`GALAXY_CLI_CACHE_DIR` for each independent run. `history contents/resolve`,
+`tool template/examples/validate`, `server capabilities`, recursive collection
+resolution, and bounded job diagnostics provide progressive discovery without
+raw API calls.
+
 Validation errors return the failing JSON path, expected type or allowed
 values, and a short correction example without emitting the full schema.
 
@@ -140,6 +146,12 @@ successful blocking result can be trusted without routine verification calls.
 `--evidence-dir` is retained only as an explicit debug and 1.4.1 compatibility
 option. Normal executions do not need evidence files.
 
+`udt validate --representation-json udt.json` performs build/runtime preflight
+without creating a UDT. Workflow runs wait for every job by default. Mutating
+tool, UDT, workflow, upload, and history-copy commands return secret-free
+operation receipt IDs that can be inspected or resumed without replaying an
+unknown POST.
+
 ## Output and Help
 
 Compact single-line JSON is the default, and progress goes to stderr. Use
@@ -151,6 +163,11 @@ galaxy-cli tool run --help
 galaxy-cli history copy --help
 galaxy-cli udt create-run --help
 ```
+
+Use global `--max-items` and `--max-chars` bounds, or `--output-file PATH` to
+write the complete redacted JSON while keeping stdout to one compact summary.
+Dataset upload uses TUS when cached capabilities support it and retains
+`--upload-backend legacy` for older servers.
 
 ## Agent Skill
 

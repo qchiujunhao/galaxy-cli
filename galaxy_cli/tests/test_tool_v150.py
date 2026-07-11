@@ -713,7 +713,7 @@ def test_strict_failed_request_reports_known_jobs_and_outputs():
 def test_tool_show_compact_cache_is_versioned_refreshable_and_secret_free(tmp_path, monkeypatch):
     from galaxy_cli.core import tool as tool_mod
 
-    monkeypatch.setattr(tool_mod, "DEFAULT_CONFIG_DIR", tmp_path)
+    monkeypatch.setenv("GALAXY_CLI_CACHE_DIR", str(tmp_path / "cache"))
     client = MagicMock()
     client.url = "https://galaxy.example.org/"
     client.api_key = "secret-api-key"
@@ -740,7 +740,7 @@ def test_tool_show_compact_cache_is_versioned_refreshable_and_secret_free(tmp_pa
     assert client.get.call_count == 3
 
     plan = tool_mod.build_tool_execution_plan(client, "tool", "history-1")
-    assert client.get.call_count == 4
+    assert client.get.call_count == 3
     assert plan["post_body"]["tool_id"] == "exact/tool/1.1"
     assert plan["post_body"]["tool_version"] == "1.1"
     assert plan["_legacy_fallback"]["post_body"]["tool_id"] == "tool"
@@ -757,12 +757,12 @@ def test_tool_show_compact_cache_is_versioned_refreshable_and_secret_free(tmp_pa
     assert result["requested_tool_id"] == "tool"
     assert result["tool_version"] == "1.1"
 
-    cache_files = list((tmp_path / "tool-cache" / "show").glob("*.json"))
+    cache_files = list((tmp_path / "cache" / "tool-schema").glob("*.json"))
     assert len(cache_files) == 2
     cache_text = "".join(path.read_text() for path in cache_files)
     assert "secret-api-key" not in cache_text
-    assert '"tool_version":"1.0"' in cache_text
-    assert '"tool_version":"1.1"' in cache_text
+    assert '"version":"1.0"' in cache_text
+    assert '"version":"1.1"' in cache_text
 
 
 def test_local_validation_error_is_compact_and_structured():
