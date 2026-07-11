@@ -417,19 +417,32 @@ class TestCli:
 
         runner = _cli_runner(separate_stderr=True)
         run_result = {
+            "success": True,
+            "state": "ok",
+            "execution_backend": "strict",
+            "history_id": "hist-1",
             "tool_id": "fastp",
-            "jobs": [{"id": "job-1"}],
-            "outputs": [{"name": "trimmed.fastq.gz"}],
+            "tool_version": "1.0",
+            "jobs": [{"id": "job-1", "state": "ok", "exit_code": 0}],
+            "wait_results": [{"id": "job-1", "state": "ok", "exit_code": 0}],
+            "wait_result": {"id": "job-1", "state": "ok", "exit_code": 0},
+            "outputs": [
+                {
+                    "output_name": "trimmed",
+                    "name": "trimmed.fastq.gz",
+                    "id": "dataset-1",
+                    "src": "hda",
+                    "state": "ok",
+                    "extension": "fastqsanger.gz",
+                    "file_size": 10,
+                }
+            ],
         }
-        wait_result = {"id": "job-1", "state": "ok", "waited_seconds": 5}
+        client = object()
 
-        with patch("galaxy_cli.cli._get_client", return_value=object()), \
+        with patch("galaxy_cli.cli._get_client", return_value=client), \
              patch("galaxy_cli.cli._require_history", return_value="hist-1"), \
-             patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result), \
-             patch("galaxy_cli.cli.tool_mod.refresh_output_details", return_value=[
-                 {"name": "trimmed.fastq.gz", "state": "ok", "extension": "fastqsanger.gz"},
-             ]), \
-             patch("galaxy_cli.cli.job_mod.wait_for_job", return_value=wait_result), \
+             patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result) as run_tool, \
              patch("galaxy_cli.cli.session_mod.track_job"):
             result = runner.invoke(
                 cli,
@@ -442,13 +455,28 @@ class TestCli:
         assert data["jobs"][0]["state"] == "ok"
         assert data["wait_result"]["state"] == "ok"
         assert data["outputs"][0]["state"] == "ok"
-        assert result.stderr == "Waiting for job job-1...\n"
+        assert result.stderr == "Waiting for all jobs from tool fastp...\n"
+        run_tool.assert_called_once_with(
+            client,
+            "fastp",
+            "hist-1",
+            inputs={},
+            execution_backend="auto",
+            wait=True,
+            timeout=1800,
+            poll_interval=180,
+            plan=None,
+        )
 
     def test_tool_run_no_wait_skips_wait_and_refresh(self):
         from galaxy_cli.cli import cli
 
         runner = CliRunner()
         run_result = {
+            "success": True,
+            "state": "submitted",
+            "execution_backend": "strict",
+            "history_id": "hist-1",
             "tool_id": "fastp",
             "jobs": [{"id": "job-1"}],
             "outputs": [{"name": "trimmed.fastq.gz"}],
@@ -456,9 +484,7 @@ class TestCli:
 
         with patch("galaxy_cli.cli._get_client", return_value=object()), \
              patch("galaxy_cli.cli._require_history", return_value="hist-1"), \
-             patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result), \
-             patch("galaxy_cli.cli.tool_mod.refresh_output_details") as refresh, \
-             patch("galaxy_cli.cli.job_mod.wait_for_job") as wait, \
+             patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result) as run_tool, \
              patch("galaxy_cli.cli.session_mod.track_job"):
             result = runner.invoke(
                 cli,
@@ -467,8 +493,135 @@ class TestCli:
 
         assert result.exit_code == 0
         assert "wait_result" not in json.loads(result.stdout)
-        wait.assert_not_called()
-        refresh.assert_not_called()
+        assert run_tool.call_args.kwargs["wait"] is False
+
+    def test_tool_run_peeks_only_named_dataset_output(self):
+        from galaxy_cli.cli import cli
+
+        runner = _cli_runner(separate_stderr=True)
+        client = object()
+        run_result = {
+            "success": True,
+            "state": "ok",
+            "execution_backend": "strict",
+            "history_id": "hist-1",
+            "tool_id": "reporter",
+            "tool_version": "1.0",
+            "jobs": [{"id": "job-1", "state": "ok", "exit_code": 0}],
+            "outputs": [
+                {"output_name": "report", "id": "dataset-1", "src": "hda", "state": "ok"},
+                {"output_name": "other", "id": "dataset-2", "src": "hda", "state": "ok"},
+            ],
+        }
+        preview = {"id": "dataset-1", "lines": ["one", "two"], "total_shown": 2}
+
+        with patch("galaxy_cli.cli._get_client", return_value=client), \
+             patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result), \
+             patch("galaxy_cli.cli.dataset_mod.peek_dataset", return_value=preview) as peek, \
+             patch("galaxy_cli.cli.session_mod.track_job"):
+            result = runner.invoke(
+                cli,
+                [
+                    "--json",
+                    "tool",
+                    "run",
+                    "reporter",
+                    "--history-id",
+                    "hist-1",
+                    "--peek-output",
+                    "report",
+                    "--peek-lines",
+                    "2",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)
+        assert data["output_peek"][0]["preview"]["lines"] == ["one", "two"]
+        peek.assert_called_once_with(
+            client,
+            "dataset-1",
+            lines=2,
+            history_id="hist-1",
+        )
+
+    def test_tool_run_collection_peek_is_explicitly_unsupported(self):
+        from galaxy_cli.cli import cli
+
+        runner = _cli_runner(separate_stderr=True)
+        run_result = {
+            "success": True,
+            "state": "ok",
+            "execution_backend": "strict",
+            "history_id": "hist-1",
+            "tool_id": "mapper",
+            "tool_version": "1.0",
+            "jobs": [{"id": "job-1", "state": "ok", "exit_code": 0}],
+            "outputs": [
+                {
+                    "output_name": "mapped_output",
+                    "id": "dataset-1",
+                    "src": "hda",
+                    "state": "ok",
+                },
+                {
+                    "output_name": "mapped_output",
+                    "id": "collection-1",
+                    "src": "hdca",
+                    "state": "ok",
+                    "collection_type": "list",
+                    "element_count": 2,
+                }
+            ],
+        }
+
+        with patch("galaxy_cli.cli._get_client", return_value=object()), \
+             patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result), \
+             patch("galaxy_cli.cli.dataset_mod.peek_dataset") as peek, \
+             patch("galaxy_cli.cli.session_mod.track_job"):
+            result = runner.invoke(
+                cli,
+                [
+                    "--json",
+                    "tool",
+                    "run",
+                    "mapper",
+                    "--history-id",
+                    "hist-1",
+                    "--peek-output",
+                    "mapped_output",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        item = json.loads(result.stdout)["output_peek"][0]
+        assert item["supported"] is False
+        assert "unsupported" in item["reason"].lower()
+        peek.assert_not_called()
+
+    def test_tool_run_rejects_peek_without_wait(self):
+        from galaxy_cli.cli import cli
+
+        runner = CliRunner()
+        with patch("galaxy_cli.cli._get_client", return_value=object()), \
+             patch("galaxy_cli.cli.tool_mod.run_tool") as run_tool:
+            result = runner.invoke(
+                cli,
+                [
+                    "tool",
+                    "run",
+                    "reporter",
+                    "--history-id",
+                    "hist-1",
+                    "--no-wait",
+                    "--peek-output",
+                    "report",
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "--peek-output requires" in result.output
+        run_tool.assert_not_called()
 
     def test_tool_run_accepts_multiqc_style_inputs_json(self, tmp_path):
         from galaxy_cli.cli import cli
@@ -495,8 +648,13 @@ class TestCli:
         }
         inputs_path.write_text(json.dumps(inputs_payload))
         run_result = {
+            "success": True,
+            "state": "ok",
+            "execution_backend": "strict",
+            "history_id": "hist-1",
             "tool_id": "multiqc",
-            "jobs": [{"id": "job-1"}],
+            "tool_version": "1.33",
+            "jobs": [{"id": "job-1", "state": "ok", "exit_code": 0}],
             "outputs": [
                 {"id": "html-1", "name": "MultiQC report", "extension": "html"},
                 {"id": "raw-1", "name": "MultiQC data", "extension": "zip"},
@@ -506,8 +664,6 @@ class TestCli:
 
         with patch("galaxy_cli.cli._get_client", return_value=client), \
              patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result) as run_tool, \
-             patch("galaxy_cli.cli.tool_mod.refresh_output_details", return_value=run_result["outputs"]), \
-             patch("galaxy_cli.cli.job_mod.wait_for_job", return_value={"id": "job-1", "state": "ok"}), \
              patch("galaxy_cli.cli.session_mod.track_job"):
             result = runner.invoke(
                 cli,
@@ -529,25 +685,39 @@ class TestCli:
             "multiqc",
             "hist-1",
             inputs=inputs_payload,
+            execution_backend="auto",
+            wait=True,
+            timeout=1800,
+            poll_interval=180,
+            plan=None,
         )
         data = json.loads(result.stdout)
         assert data["jobs"][0]["id"] == "job-1"
         assert [output["id"] for output in data["outputs"]] == ["html-1", "raw-1"]
 
-    def test_tool_run_dry_run_payload_outputs_post_body(self):
+    def test_tool_run_dry_run_payload_outputs_backend_and_post_body(self):
         from galaxy_cli.cli import cli
 
         runner = CliRunner()
         client = object()
         payload = {
             "tool_id": "hisat2",
+            "tool_version": "2.2.2",
             "history_id": "hist-1",
-            "inputs": {"library|input_1": {"src": "hda", "id": "dataset-1"}},
+            "inputs": {"library": {"input_1": {"src": "hda", "id": "dataset-1"}}},
+            "strict": True,
+            "send_email_notification": False,
+        }
+        plan = {
+            "requested_execution_backend": "auto",
+            "execution_backend": "strict",
+            "endpoint": "/api/jobs",
+            "post_body": payload,
         }
 
         with patch("galaxy_cli.cli._get_client", return_value=client), \
              patch("galaxy_cli.cli._require_history", return_value="hist-1"), \
-             patch("galaxy_cli.cli.tool_mod.build_tool_payload", return_value=payload) as build, \
+             patch("galaxy_cli.cli.tool_mod.build_tool_execution_plan", return_value=plan) as build, \
              patch("galaxy_cli.cli.tool_mod.run_tool") as run_tool:
             result = runner.invoke(
                 cli,
@@ -555,8 +725,14 @@ class TestCli:
             )
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output) == payload
-        build.assert_called_once_with(client, "hisat2", "hist-1", inputs={})
+        assert json.loads(result.output) == plan
+        build.assert_called_once_with(
+            client,
+            "hisat2",
+            "hist-1",
+            inputs={},
+            execution_backend="auto",
+        )
         run_tool.assert_not_called()
 
     def test_tool_run_save_payload_writes_post_body_and_submits(self, tmp_path):
@@ -567,10 +743,22 @@ class TestCli:
         payload_path = tmp_path / "payload.json"
         payload = {
             "tool_id": "hisat2",
+            "tool_version": "2.2.2",
             "history_id": "hist-1",
-            "inputs": {"library|input_1": {"src": "hda", "id": "dataset-1"}},
+            "inputs": {"library": {"input_1": {"src": "hda", "id": "dataset-1"}}},
+            "strict": True,
+            "send_email_notification": False,
+        }
+        plan = {
+            "requested_execution_backend": "auto",
+            "execution_backend": "strict",
+            "endpoint": "/api/jobs",
+            "post_body": payload,
         }
         run_result = {
+            "success": True,
+            "state": "submitted",
+            "execution_backend": "strict",
             "tool_id": "hisat2",
             "history_id": "hist-1",
             "jobs": [],
@@ -579,7 +767,7 @@ class TestCli:
 
         with patch("galaxy_cli.cli._get_client", return_value=client), \
              patch("galaxy_cli.cli._require_history", return_value="hist-1"), \
-             patch("galaxy_cli.cli.tool_mod.build_tool_payload", return_value=payload), \
+             patch("galaxy_cli.cli.tool_mod.build_tool_execution_plan", return_value=plan), \
              patch("galaxy_cli.cli.tool_mod.run_tool", return_value=run_result) as run_tool:
             result = runner.invoke(
                 cli,
@@ -603,7 +791,11 @@ class TestCli:
             "hisat2",
             "hist-1",
             inputs={},
-            payload=payload,
+            execution_backend="auto",
+            wait=False,
+            timeout=1800,
+            poll_interval=180,
+            plan=plan,
         )
 
     def test_workflow_run_dry_run_payload_outputs_post_body(self):
@@ -924,6 +1116,137 @@ class TestCli:
         assert payload["error"] is True
         assert payload["category"] == "usage_error"
         assert "forward and one reverse element" in payload["message"]
+
+    def test_main_backend_error_is_compact_and_redacts_explicit_api_key(self):
+        from galaxy_cli.cli import main
+        from galaxy_cli.utils.galaxy_backend import (
+            EXIT_TIMEOUT,
+            GalaxyBackendError,
+        )
+
+        secret = "cli-secret-api-key"
+        error = GalaxyBackendError(
+            f"request containing {secret} timed out",
+            category="timeout",
+            error_kind="job_timeout",
+            exit_code=EXIT_TIMEOUT,
+            submission_state="submitted",
+            retry_safe=False,
+            details={"job_ids": ["job-1"]},
+        )
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "galaxy-cli",
+                "--url",
+                "https://galaxy.example.org",
+                "--api-key",
+                secret,
+                "job",
+                "wait",
+                "job-1",
+            ],
+        ), patch("galaxy_cli.cli._get_client", return_value=object()), patch(
+            "galaxy_cli.cli.job_mod.wait_for_job", side_effect=error
+        ), patch("click.echo") as echo, pytest.raises(SystemExit) as exc:
+            main()
+
+        assert exc.value.code == EXIT_TIMEOUT
+        rendered = [str(item.args[0]) for item in echo.call_args_list]
+        assert secret not in "\n".join(rendered)
+        payload_text = rendered[-1]
+        payload = json.loads(payload_text)
+        assert payload_text == json.dumps(payload, separators=(",", ":"))
+        assert payload["message"] == "request containing [REDACTED] timed out"
+        assert payload["retry_safe"] is False
+
+    def test_main_recursively_redacts_effective_profile_key_from_error_details(self):
+        from galaxy_cli.cli import main
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+        secret = "profile-secret-api-key"
+        client = SimpleNamespace(api_key=secret)
+        error = GalaxyBackendError(
+            "job status unavailable",
+            category="server_error",
+            error_kind="job_status_unavailable",
+            submission_state="submitted",
+            retry_safe=False,
+            details={
+                "job_ids": ["job-1"],
+                "diagnostic": {"authorization": f"Bearer {secret}"},
+            },
+        )
+        with patch.object(
+            sys,
+            "argv",
+            ["galaxy-cli", "--profile", "main", "job", "wait", "job-1"],
+        ), patch("galaxy_cli.cli.GalaxyClient", return_value=client), patch(
+            "galaxy_cli.cli.job_mod.wait_for_job", side_effect=error
+        ), patch("click.echo") as echo, pytest.raises(SystemExit):
+            main()
+
+        rendered = "\n".join(str(item.args[0]) for item in echo.call_args_list)
+        assert secret not in rendered
+        payload = json.loads(str(echo.call_args.args[0]))
+        assert payload["diagnostic"]["authorization"] == "Bearer [REDACTED]"
+
+    @pytest.mark.parametrize("output_mode", ["--json", "--human"])
+    def test_success_and_progress_output_redact_effective_api_key(self, output_mode):
+        from galaxy_cli.cli import cli
+
+        secret = "success-secret-api-key"
+        client = SimpleNamespace(api_key=secret)
+        result_payload = {
+            "success": True,
+            "state": "ok",
+            "execution_backend": "strict",
+            "history_id": "history-1",
+            "tool_id": secret,
+            "tool_version": "1.0",
+            "jobs": [],
+            "outputs": [
+                {
+                    "output_name": "report",
+                    "id": "dataset-1",
+                    "src": "hda",
+                    "name": f"report-{secret}",
+                    "state": "ok",
+                    "extension": "txt",
+                    "file_size": 1,
+                }
+            ],
+        }
+
+        with patch("galaxy_cli.cli.GalaxyClient", return_value=client), patch(
+            "galaxy_cli.cli.tool_mod.run_tool", return_value=result_payload
+        ):
+            result = _cli_runner(separate_stderr=True).invoke(
+                cli,
+                [
+                    output_mode,
+                    "--url",
+                    "https://galaxy.example.org",
+                    "--api-key",
+                    secret,
+                    "tool",
+                    "run",
+                    secret,
+                    "--history-id",
+                    "history-1",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert secret not in result.stdout
+        assert secret not in result.stderr
+        assert "[REDACTED]" in result.stdout
+        assert "[REDACTED]" in result.stderr
+        if output_mode == "--json":
+            payload = json.loads(result.stdout)
+            assert payload["tool_id"] == "[REDACTED]"
+            assert payload["outputs"][0]["name"] == "report-[REDACTED]"
 
     def test_json_collection_create_requests_resolved_elements(self):
         from galaxy_cli.cli import cli

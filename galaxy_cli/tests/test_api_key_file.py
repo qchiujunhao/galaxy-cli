@@ -173,3 +173,34 @@ def test_http_errors_redact_api_key():
     assert secret not in str(exc.value)
     assert secret not in json.dumps(exc.value.to_dict())
     assert "[REDACTED]" in str(exc.value)
+
+
+def test_http_422_is_compact_structured_and_redacted():
+    from galaxy_cli.utils.galaxy_backend import GalaxyBackendError, GalaxyClient
+
+    secret = "validation-secret-api-key"
+    client = GalaxyClient(url="https://galaxy.example.org", api_key=secret)
+    response = MagicMock()
+    response.raise_for_status.side_effect = requests.HTTPError("unprocessable")
+    response.json.return_value = {
+        "detail": [
+            {
+                "loc": ["body", "inputs", "selector"],
+                "msg": f"invalid value containing {secret}",
+                "input": secret,
+            }
+        ]
+    }
+    response.status_code = 422
+
+    with pytest.raises(GalaxyBackendError) as exc:
+        client._handle_response(response)
+
+    payload = exc.value.to_dict()
+    assert exc.value.category == "invalid_request"
+    assert exc.value.status_code == 422
+    assert payload["validation"]["path"] == "$.inputs.selector"
+    assert "input" not in payload["validation"]
+    assert secret not in str(exc.value)
+    assert secret not in repr(exc.value)
+    assert secret not in json.dumps(payload)

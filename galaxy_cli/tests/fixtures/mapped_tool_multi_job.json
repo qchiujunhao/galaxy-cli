@@ -1,0 +1,49 @@
+{
+  "trace_type": "mapped_tool_multi_job",
+  "tool": {
+    "id": "trace_mapped_tool",
+    "name": "Trace mapped tool",
+    "version": "2.0.0",
+    "description": "An anonymized mapped execution trace",
+    "inputs": [
+      {"name": "input", "label": "Input", "type": "data", "optional": false}
+    ],
+    "outputs": [{"name": "out", "format": "txt", "label": "Output"}]
+  },
+  "inputs": {
+    "input": {
+      "__class__": "Batch",
+      "values": [{"src": "hdca", "id": "input-collection"}]
+    }
+  },
+  "submit_response": {"tool_request_id": "request-1", "task_result": {"id": "task-1"}},
+  "request_detail": {
+    "id": "request-1",
+    "state": "submitted",
+    "jobs": [{"src": "job", "id": "job-1"}, {"src": "job", "id": "job-2"}],
+    "implicit_collections": [
+      {"src": "hdca", "id": "output-collection", "output_name": "out"}
+    ]
+  },
+  "jobs": {
+    "job-1": {
+      "id": "job-1",
+      "state": "ok",
+      "exit_code": 0,
+      "outputs": {"out": {"src": "hda", "id": "dataset-1"}},
+      "output_collections": {}
+    },
+    "job-2": {
+      "id": "job-2",
+      "state": "ok",
+      "exit_code": 0,
+      "outputs": {"out": {"src": "hda", "id": "dataset-2"}},
+      "output_collections": {}
+    }
+  },
+  "output_details": {
+    "dataset-1": {"id": "dataset-1", "name": "mapped 1", "state": "ok", "extension": "txt", "file_size": 11, "history_content_type": "dataset"},
+    "dataset-2": {"id": "dataset-2", "name": "mapped 2", "state": "ok", "extension": "txt", "file_size": 12, "history_content_type": "dataset"},
+    "output-collection": {"id": "output-collection", "name": "mapped outputs", "populated_state": "ok", "collection_type": "list", "element_count": 2, "history_content_type": "dataset_collection"}
+  }
+}

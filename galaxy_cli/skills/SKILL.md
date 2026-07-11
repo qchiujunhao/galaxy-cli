@@ -6,252 +6,44 @@ description: "Operate Galaxy through the galaxy-cli command line interface with 
 # galaxy-cli
 
 Use this skill when the task requires Galaxy operations through `galaxy-cli`.
-Keep token use low: read this file once, then use `galaxy-cli <command> --help`
-only for the specific command you are about to run.
+Keep discovery progressive: start with `galaxy-cli <group> <command> --help`
+for the one command you need.
 
-## Token-Cheap Defaults
+## Choose the Operation
 
-`galaxy-cli` is agent-first. The default path is:
+- Use `tool run` for regular Galaxy tools.
+- Use `udt create-run` when creating and immediately running a new UDT; use
+  `udt run` for an existing UDT.
+- Let tool, UDT, upload, and history-copy commands wait by default. Use
+  `--no-wait` only when asynchronous submission is explicitly required.
+- Leave `tool run` on `--execution-backend auto` unless compatibility
+  diagnosis requires an explicit backend.
+- Use `tool show` only when the exact tool ID and input contract are not
+  already available. Refresh its cache when freshness matters.
 
-1. When creating and running a fresh UDT in one task, use
-   `galaxy-cli udt create-run ...`. Use separate `udt create` and `udt run`
-   commands only when intermediate inspection is required.
-2. Submit each regular tool with `galaxy-cli tool run ... --inputs-json FILE`.
-3. Let `tool run` and `udt run` wait. Do not add `--no-wait` unless the task explicitly asks
-   for asynchronous submission.
-4. Use the returned `outputs` array for output IDs, state, datatype, and size.
-5. Do not call `job show`, `dataset show`, `collection show`, `dataset list`,
-   or `collection list` for routine verification.
-6. Do not call `job show --logs` unless debugging a failed job.
-7. Do not call `tool show` when task files already provide exact tool IDs and
-   parameter JSON.
+## Trust and Retry Rules
 
-## Rules
+- Trust a successful blocking result. It already contains final job states and
+  compact dataset and collection output metadata.
+- Do not repeat `job show`, `dataset show`, `collection show`, or history
+  contents calls merely to verify a successful blocking result.
+- Use job logs only to diagnose a reported failure.
+- Never retry a mutating command when `submission_state` is `unknown` or
+  `retry_safe` is false. Resolve the existing request or job IDs first.
+- A non-zero timeout or job failure is final for that CLI invocation; do not
+  reinterpret it as a successful submission.
 
-- Use only `galaxy-cli` for Galaxy actions in this condition.
-- Do not use BioBlend, raw HTTP clients, MCP tools, or Galaxy source code.
-- Never implement UDT calls with ad hoc Requests, low-level BioBlend calls, or
-  guessed tool-ID prefixes. Use the `udt` commands.
-- Do not inspect or print API keys. Use `GALAXY_URL` with `GALAXY_API_KEY` or
-  `GALAXY_API_KEY_FILE` from the environment. The CLI reads the key file;
-  agents must not read it or place the key in command arguments.
-- Compact JSON output is the default. Use `--human` only when a task needs
-  human-readable terminal output.
-- Pass `--history-id` explicitly on every history-scoped command. Do not rely
-  on shared session state when multiple agents or concurrent runs may touch the
-  same machine.
-- Prefer `--inputs-json FILE` for tool runs with conditionals, repeats, or more
-  than two parameters.
-- Store large command output in files and extract only needed fields with `jq`.
-- Use `udt create-run --evidence-dir PATH` when full UDT evidence is required;
-  keep compact command JSON on stdout.
-- Safe GET calls retry `429`, `502`, `503`, and `504` automatically. Do not
-  blindly retry create/run/upload commands after an unknown submission state.
-- If the task already provides exact tool IDs and parameter JSON, submit the
-  tool directly. Do not call `tool show` just to re-discover supplied params.
-- Use `tool run --dry-run-payload` or `--save-payload PATH` when you need to
-  validate inputs and inspect the exact Galaxy POST body before submission.
-- Tool and workflow submissions validate obvious mistakes before POSTing to
-  Galaxy: unknown input names, missing required dataset or collection inputs,
-  invalid dataset-vs-collection source prefixes, and simple select, boolean,
-  integer, and float values.
-- Do not download datasets or reports to local files unless the task explicitly
-  asks for a local artifact. Reuse Galaxy dataset ids and collection ids
-  directly in downstream tool runs.
-- For `workflow run`, explicit source prefixes must be `hda:`, `hdca:`, or
-  `ldda:`. Treat any other prefix as invalid input and fix it before submit.
-- `workflow run --wait` should be trusted only when the invocation reaches
-  Galaxy's `scheduled` or `completed` state and all discovered jobs are
-  terminal; this avoids reporting success while later steps are still being
-  scheduled.
+## Safety and Scope
 
-## Minimal Command Recipes
-
-Create a fresh history:
-
-```bash
-HID=$(galaxy-cli history create "task run" | jq -r .id)
-echo "$HID" > history_id.txt
-```
-
-Copy a prepared source history into a fresh working history:
-
-```bash
-HID=$(galaxy-cli history copy "$SOURCE_HISTORY_ID" "task run copy" | jq -r .id)
-echo "$HID" > history_id.txt
-```
-
-Upload local datasets:
-
-```bash
-FWD=$(galaxy-cli dataset upload inputs/reads_1.fastq.gz --history-id "$HID" --file-type fastqsanger.gz | jq -r .id)
-REV=$(galaxy-cli dataset upload inputs/reads_2.fastq.gz --history-id "$HID" --file-type fastqsanger.gz | jq -r .id)
-```
-
-`dataset upload` waits by default. Do not create collections from uploaded
-datasets until the returned upload JSON reports `state: "ok"`.
-For large files, set an upload/request timeout explicitly:
-
-```bash
-DATASET=$(galaxy-cli dataset upload matrix.tsv --history-id "$HID" --file-type tabular --upload-timeout 7200 --timeout 7200 | jq -r .id)
-```
-
-`--timeout` is the upload job wait timeout and also the HTTP upload timeout
-when `--upload-timeout` is not set. `GALAXY_CLI_REQUEST_TIMEOUT` controls
-regular API request reads, and `GALAXY_CLI_UPLOAD_TIMEOUT` controls upload POSTs.
-
-Create and run a fresh user-defined tool in one command:
-
-```bash
-galaxy-cli udt create-run \
-  --representation-json udt.json \
-  --history-id "$HID" \
-  --inputs-json udt-inputs.json > udt-result.json
-```
-
-The representation file is the inner `GalaxyUserTool` JSON object. Dataset and
-collection inputs use native objects such as `{"src":"hda","id":"DATASET_ID"}`
-and `{"src":"hdca","id":"COLLECTION_ID"}`. The command creates exactly one
-UDT, runs the UUID returned by Galaxy, waits, refreshes outputs, and returns job
-and output IDs. Use separate commands only when the created representation must
-be inspected before execution:
-
-```bash
-CREATED=$(galaxy-cli udt create --representation-json udt.json)
-UUID=$(printf '%s' "$CREATED" | jq -r .uuid)
-galaxy-cli udt show "$UUID"
-galaxy-cli udt run "$UUID" --history-id "$HID" --inputs-json udt-inputs.json
-```
-
-Create collections:
-
-```bash
-PAIR=$(galaxy-cli collection create "pair" --history-id "$HID" --collection-type paired --forward "$FWD" --reverse "$REV" | jq -r .id)
-PAIR_ALT=$(galaxy-cli collection create "pair" --history-id "$HID" --collection-type paired -e forward="$FWD" -e reverse="$REV" | jq -r .id)
-LIST_PAIR=$(galaxy-cli collection create "reads" --history-id "$HID" --collection-type list:paired -p "pair:$FWD:$REV" | jq -r .id)
-LIST=$(galaxy-cli collection create "reports" --history-id "$HID" --collection-type list -e pair="$DATASET_ID" | jq -r .id)
-```
-
-`collection create` includes resolved element IDs in JSON mode. Save its output if the
-next tool needs a nested collection element; do not call `collection show` unless
-the create output is insufficient.
-
-Run a tool:
-
-```bash
-cat > tool_inputs.json <<EOF
-{
-  "input": "hda:$DATASET_ID"
-}
-EOF
-galaxy-cli tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json > tool_result.json
-JOB=$(jq -r '.jobs[0].id' tool_result.json)
-```
-
-Search for tools with bounded output:
-
-```bash
-galaxy-cli tool search "fastqc" --limit 5
-galaxy-cli tool search "machine learning" --limit 10 --cache
-galaxy-cli tool search "machine learning" --limit 10 --refresh-cache
-```
-
-Default `tool search` output is limited and does not resolve every string-only
-hit. Add `--resolve` only when the search result lacks enough detail.
-
-Inspect a payload before submitting:
-
-```bash
-galaxy-cli tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json --dry-run-payload
-galaxy-cli tool run "$TOOL_ID" --history-id "$HID" --inputs-json tool_inputs.json --save-payload payload.json
-galaxy-cli workflow run "$WF_ID" --history-id "$HID" -i 0="$DATASET_ID" --dry-run-payload
-galaxy-cli workflow run "$WF_ID" --history-id "$HID" -i 0="$DATASET_ID" --save-payload workflow_payload.json
-```
-
-If dry-run returns `invalid_request`, fix the payload and rerun dry-run. Do not
-submit the job or invocation until the dry-run payload validates.
-
-Check job and output states:
-
-```bash
-jq '{job:.jobs[0], wait_result, outputs}' tool_result.json
-galaxy-cli job show "$JOB" --full
-```
-
-`tool run` and `udt run` wait by default. In JSON mode, the `outputs` array
-includes final dataset or dataset-collection state/type/size metadata after
-wait. Trust a successful blocking result. Do not immediately repeat
-`job show --full`, `dataset show`, `collection show`, or history-list commands
-unless a required field is missing.
-
-Preview wide datasets compactly:
-
-```bash
-galaxy-cli dataset peek "$DATASET_ID" --history-id "$HID" --lines 5 --max-fields 20 --max-chars-per-line 500
-```
-
-`dataset peek` returns compact `lines` plus per-row `field_count` and first
-fields under `rows`, so broad expression matrices do not flood context.
-
-Download outputs only when the task explicitly asks for local artifacts:
-
-```bash
-galaxy-cli dataset download "$DATASET_ID" results/output.dat
-```
-
-## Input Encoding
-
-- Dataset: `hda:DATASET_ID`
-- Dataset collection: `hdca:COLLECTION_ID`
-- For dataset or collection inputs nested inside conditionals or repeats, use
-  the native JSON object form: `{"src": "hda", "id": "DATASET_ID"}` or
-  `{"src": "hdca", "id": "COLLECTION_ID"}`.
-- Flattened nested data keys are also normalized, for example
-  `library|input_1=hda:DATASET_ID` and
-  `select_data|countsFile=hdca:COLLECTION_ID`.
-- Library dataset: `ldda:DATASET_ID`
-- Boolean: `true` or `false`
-- Conditional or repeat params: prefer nested JSON in `--inputs-json`.
-- Optional repeat blocks with `min: 0` can be omitted. If a repeat item is
-  supplied, its required child inputs still need valid values.
-- Flattened conditional paths use pipes when needed, for example
-  `single_paired|paired_input`.
-- Repeated and conditional inputs should mirror `galaxy-cli tool show TOOL_ID`.
-- Current IUC MultiQC FastQC inputs use `results -> software_cond -> output`:
-
-```json
-{
-  "results": [
-    {
-      "software_cond": {
-        "software": "fastqc",
-        "output": [
-          {
-            "type": "data",
-            "input": [
-              {"src": "hda", "id": "FASTQC_RAW_DATA_1"},
-              {"src": "hda", "id": "FASTQC_RAW_DATA_2"}
-            ]
-          }
-        ]
-      }
-    }
-  ]
-}
-```
-
-## What To Read Next
-
-Publish/import a completed history when a run needs a shareable result:
-
-```bash
-galaxy-cli history update "$HID" --published true --importable true
-```
-
-- For command syntax, run `galaxy-cli <group> --help` or
-  `galaxy-cli <group> <command> --help`.
-- For tool parameters, use the task's `workflow/step_specs.json`,
-  `workflow/required_step_params.json`, and `workflow/step_execution_hints.json`.
-- Only run `galaxy-cli tool show TOOL_ID` when those task files do not
-  provide enough input names/options to build the submission JSON.
-- Do not read package source code. The command help and task files are enough.
+- Use `galaxy-cli` alone for Galaxy operations. Do not mix in BioBlend, raw
+  HTTP, MCP, or Galaxy source inspection for duplicate execution or routine
+  verification.
+- Do not inspect, print, or pass API keys in command arguments. Let the CLI
+  read `GALAXY_API_KEY` or `GALAXY_API_KEY_FILE` from the environment.
+- Pass `--history-id` explicitly for concurrent or agent-driven work.
+- Prefer `--inputs-json` for nested, repeated, conditional, multiple-data, or
+  collection inputs.
+- Do not download outputs by default. Use returned Galaxy IDs for downstream
+  commands; request a bounded preview only when its output name is known.
+- Compact JSON is the default. Keep progress on stderr and consume stdout as
+  one machine-readable result.

@@ -33,6 +33,7 @@
         <a href="#install">Install</a>
         <a href="#agent-skill">Agent skill</a>
         <a href="#quickstart">Quickstart</a>
+        <a href="#reliability">Reliability</a>
         <a href="#inputs">Inputs</a>
         <a href="#validation">Validation</a>
         <a href="#examples">Examples</a>
@@ -81,8 +82,10 @@
   <span class="tok-flag">--history-id</span> <span class="tok-str">"$HID"</span> <span class="tok-punc">\</span>
   <span class="tok-flag">--inputs-json</span> multiqc_inputs.json
 
-<span class="tok-punc">{</span><span class="tok-key">"jobs"</span><span class="tok-punc">:[{</span><span class="tok-key">"id"</span><span class="tok-punc">:</span><span class="tok-str">"..."</span><span class="tok-punc">,</span><span class="tok-key">"state"</span><span class="tok-punc">:</span><span class="tok-str">"ok"</span><span class="tok-punc">}],</span>
- <span class="tok-key">"outputs"</span><span class="tok-punc">:[{</span><span class="tok-key">"name"</span><span class="tok-punc">:</span><span class="tok-str">"MultiQC report"</span><span class="tok-punc">,</span><span class="tok-key">"state"</span><span class="tok-punc">:</span><span class="tok-str">"ok"</span><span class="tok-punc">}]}</span></code></pre>
+<span class="tok-punc">{</span><span class="tok-key">"success"</span><span class="tok-punc">:</span><span class="tok-num">true</span><span class="tok-punc">,</span><span class="tok-key">"state"</span><span class="tok-punc">:</span><span class="tok-str">"ok"</span><span class="tok-punc">,</span>
+ <span class="tok-key">"execution_backend"</span><span class="tok-punc">:</span><span class="tok-str">"strict"</span><span class="tok-punc">,</span>
+ <span class="tok-key">"jobs"</span><span class="tok-punc">:[{</span><span class="tok-key">"id"</span><span class="tok-punc">:</span><span class="tok-str">"..."</span><span class="tok-punc">,</span><span class="tok-key">"state"</span><span class="tok-punc">:</span><span class="tok-str">"ok"</span><span class="tok-punc">}],</span>
+ <span class="tok-key">"outputs"</span><span class="tok-punc">:[{</span><span class="tok-key">"output_name"</span><span class="tok-punc">:</span><span class="tok-str">"report"</span><span class="tok-punc">,</span><span class="tok-key">"state"</span><span class="tok-punc">:</span><span class="tok-str">"ok"</span><span class="tok-punc">}]}</span></code></pre>
           </figure>
         </section>
       </div>
@@ -115,8 +118,9 @@
         </div>
         <p>
           The Python package includes a bundled <code>galaxy-cli</code> skill
-          so coding agents can use Galaxy without spending turns rediscovering
-          command syntax, input encoding, and efficient verification steps.
+          so coding agents can choose safe Galaxy operations without spending
+          turns on duplicate verification. The skill contains decision rules;
+          command-specific <code>--help</code> remains the syntax reference.
         </p>
         <div class="code-grid">
           <div>
@@ -170,6 +174,40 @@ galaxy-cli tool run "$FASTQC_TOOL" \
         </ol>
       </section>
 
+      <section class="band split" id="reliability">
+        <div>
+          <p class="eyebrow">Reliable execution</p>
+          <h2>Trust one blocking result</h2>
+          <p>
+            A blocking tool run waits for every spawned job with one global
+            deadline. Success includes the backend, exact tool version, final
+            job states and exit codes, and compact metadata for every dataset
+            and collection output.
+          </p>
+          <p>
+            The default <code>auto</code> backend prefers strict nested
+            execution. It falls back to legacy execution only when the initial
+            strict endpoint explicitly returns HTTP 404 or 405. Input errors,
+            timeouts, connection loss, server errors, and unknown submission
+            states never trigger a second submission.
+          </p>
+          <p>
+            Do not blindly retry an error whose
+            <code>submission_state</code> is <code>unknown</code> or whose
+            <code>retry_safe</code> value is false.
+          </p>
+        </div>
+        <pre><code>galaxy-cli tool run "$TOOL_ID" \
+  --history-id "$HID" \
+  --inputs-json inputs.json \
+  --execution-backend auto
+
+galaxy-cli history copy "$SOURCE_HID" \
+  "working copy" \
+  --timeout 1800 \
+  --poll-interval 10</code></pre>
+      </section>
+
       <section class="band split" id="inputs">
         <div>
           <p class="eyebrow">Input encoding</p>
@@ -178,8 +216,9 @@ galaxy-cli tool run "$FASTQC_TOOL" \
             Use <code>--inputs-json</code> for repeats, conditionals,
             collections, and tools like MultiQC. Check your instance with
             <code>galaxy-cli tool show TOOL_ID</code>, then write JSON that
-            follows those input names. <code>galaxy-cli</code> flattens the
-            payload to Galaxy's native form before submission.
+            follows those input names. Strict execution preserves nested
+            Galaxy input objects; the selectable legacy backend retains the
+            established pipe-key flattening behavior for older servers.
           </p>
           <p>
             Optional repeat blocks with <code>min: 0</code> can be omitted. If
@@ -228,9 +267,10 @@ galaxy-cli tool run "$FASTQC_TOOL" \
             integer, and float value errors.
           </p>
           <p>
-            Use <code>--dry-run-payload</code> to validate and print the exact
-            POST body without submission. Use <code>--save-payload</code> to
-            keep the validated request body alongside a real submission.
+            Use <code>--dry-run-payload</code> to validate and print the chosen
+            backend, endpoint, and exact POST body without submission. Use
+            <code>--save-payload</code> to keep the validated request body
+            alongside a real submission.
           </p>
         </div>
         <pre><code>galaxy-cli tool run cat1 \
@@ -270,6 +310,13 @@ galaxy-cli task workflow "$WF" \
   --upload 0=reads.fastq.gz</code></pre>
           </article>
           <article>
+            <h3>Create and run a user-defined tool</h3>
+            <pre><code>galaxy-cli udt create-run \
+  --representation-json udt.json \
+  --history-id "$HID" \
+  --inputs-json udt-inputs.json</code></pre>
+          </article>
+          <article>
             <h3>Discover tools and input names</h3>
             <pre><code>FASTQC_TOOL=$(galaxy-cli tool search fastqc --limit 5 | jq -r '.[0].id')
 MULTIQC_TOOL=$(galaxy-cli tool search multiqc --limit 5 | jq -r '.[0].id')
@@ -281,6 +328,7 @@ galaxy-cli tool show "$MULTIQC_TOOL" \
           <article>
             <h3>Create and inspect a history</h3>
             <pre><code>HID=$(galaxy-cli history create "qc $(date +%F)" | jq -r .id)
+COPY=$(galaxy-cli history copy "$HID" "working copy" | jq -r .id)
 galaxy-cli history show "$HID"
 galaxy-cli history show "$HID" --contents
 galaxy-cli dataset list --history-id "$HID"</code></pre>
@@ -317,7 +365,9 @@ galaxy-cli tool run "$FASTQC_TOOL" \
 
 galaxy-cli tool run "$FASTQC_TOOL" \
   --history-id "$HID" \
-  --inputs-json fastqc_inputs.json</code></pre>
+  --inputs-json fastqc_inputs.json \
+  --peek-output html_file \
+  --peek-lines 5</code></pre>
           </article>
           <article>
             <h3>Run MultiQC on FastQC raw data</h3>
@@ -414,7 +464,12 @@ galaxy-cli workflow export "$WF" -o workflow.ga</code></pre>
           <article>
             <span class="cmd-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><line x1="13" y1="15" x2="17" y2="15"/></svg></span>
             <h3>tool</h3>
-            <p>Search, inspect, run, wait, and return compact output metadata.</p>
+            <p>Search, inspect, run every spawned job, and return authoritative output metadata.</p>
+          </article>
+          <article>
+            <span class="cmd-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3h8v4H8z"/><path d="M6 7h12v14H6z"/><path d="M9 11h6M9 15h6"/></svg></span>
+            <h3>udt</h3>
+            <p>Create, inspect, run, and deactivate user-defined Galaxy tools.</p>
           </article>
           <article>
             <span class="cmd-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.3"/><circle cx="6" cy="18" r="2.3"/><circle cx="18" cy="12" r="2.3"/><path d="M8.3 6H13a3 3 0 0 1 3 3v.7"/><path d="M8.3 18H13a3 3 0 0 0 3-3v-.7"/></svg></span>

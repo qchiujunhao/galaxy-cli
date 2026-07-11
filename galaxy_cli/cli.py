@@ -93,6 +93,8 @@ def _output(data, human_func=None):
     JSON mode emits compact single-line JSON to minimize tokens for LLM
     agents that re-read this output on every turn.
     """
+    root_obj = _current_root_obj()
+    data = _redact_cli_value(data, root_obj)
     if _json_mode_enabled():
         click.echo(json.dumps(data, separators=(",", ":"), default=str))
     elif human_func:
@@ -101,9 +103,51 @@ def _output(data, human_func=None):
         click.echo(json.dumps(data, separators=(",", ":"), default=str))
 
 
+def _compact_json(data):
+    return json.dumps(data, separators=(",", ":"), default=str)
+
+
+def _current_root_obj():
+    ctx = click.get_current_context(silent=True)
+    while ctx is not None and ctx.parent is not None:
+        ctx = ctx.parent
+    return ctx.obj if ctx is not None and ctx.obj else {}
+
+
+def _cli_secrets(root_obj):
+    if not root_obj:
+        return ()
+    client = root_obj.get("client")
+    candidates = (root_obj.get("api_key"), getattr(client, "api_key", None))
+    return tuple(
+        dict.fromkeys(secret for secret in candidates if isinstance(secret, str) and secret)
+    )
+
+
+def _redact_cli_value(value, root_obj):
+    if isinstance(value, dict):
+        return {
+            _redact_cli_value(key, root_obj): _redact_cli_value(item, root_obj)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_cli_value(item, root_obj) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_cli_value(item, root_obj) for item in value)
+    if not isinstance(value, str):
+        return value
+    for secret in _cli_secrets(root_obj):
+        value = value.replace(secret, "[REDACTED]")
+    return value
+
+
+def _redact_cli_text(value, root_obj):
+    return _redact_cli_value(str(value), root_obj)
+
+
 def _progress(message):
     """Emit progress text without corrupting JSON stdout."""
-    click.echo(message, err=_json_mode_enabled())
+    click.echo(_redact_cli_text(message, _current_root_obj()), err=True)
 
 
 def _write_json_file(path, payload):
@@ -156,6 +200,75 @@ def _require_history(ctx):
     return hid
 
 
+def _attach_output_peek(client, result, output_name, lines):
+    """Attach bounded previews for one explicitly named dataset output."""
+    matches = [
+        output
+        for output in result.get("outputs", [])
+        if output.get("output_name") == output_name
+        or (not output.get("output_name") and output.get("name") == output_name)
+    ]
+    if not matches:
+        available = sorted(
+            {
+                output.get("output_name") or output.get("name")
+                for output in result.get("outputs", [])
+                if output.get("output_name") or output.get("name")
+            }
+        )
+        raise GalaxyBackendError(
+            f"Output '{output_name}' was not produced by this tool run.",
+            category="invalid_request",
+            exit_code=EXIT_USER_ERROR,
+            error_kind="output_not_found",
+            submission_state="submitted",
+            retry_safe=False,
+            details={
+                "history_id": result.get("history_id", ""),
+                "tool_id": result.get("tool_id", ""),
+                "job_ids": [job.get("id", "") for job in result.get("jobs", [])],
+                "available_output_names": available,
+            },
+        )
+
+    collection_matches = [
+        output
+        for output in matches
+        if output.get("src") == "hdca"
+        or output.get("history_content_type") == "dataset_collection"
+    ]
+    if collection_matches:
+        result["output_peek"] = [
+            {
+                "output_name": output_name,
+                "id": output.get("id", ""),
+                "src": "hdca",
+                "supported": False,
+                "reason": "Collection output preview is unsupported; no elements were expanded.",
+            }
+            for output in collection_matches
+        ]
+        return result
+
+    previews = []
+    for output in matches:
+        preview = dataset_mod.peek_dataset(
+            client,
+            output.get("id", ""),
+            lines=lines,
+            history_id=result.get("history_id") or None,
+        )
+        previews.append({
+            "output_name": output_name,
+            "id": output.get("id", ""),
+            "src": "hda",
+            "supported": True,
+            "preview": preview,
+        })
+    result["output_peek"] = previews
+    return result
+
+
 # ── Main CLI Group ───────────────────────────────────────────────────────
 
 @click.group(invoke_without_command=True)
@@ -198,7 +311,9 @@ def cli(ctx, url, api_key, profile, history_id, request_timeout, json_mode):
       galaxy-cli tool search "cut columns"
       galaxy-cli tool show Cut1
       galaxy-cli tool run Cut1 --history-id HID -i input=DSID --wait
-      galaxy-cli dataset show OUTPUT_ID
+
+    A successful blocking tool result already includes final job and output
+    metadata; follow-up show calls are only needed for explicit diagnostics.
 
     \b
     Quick start (workflow task):
@@ -427,8 +542,25 @@ def history_create(ctx, name):
 @click.argument("history_id")
 @click.argument("name", required=False)
 @click.option("--all-datasets", is_flag=True, help="Also copy deleted datasets and deleted collections")
+@click.option(
+    "--wait/--no-wait",
+    default=True,
+    help="Wait for copied datasets and collections to become ready. Default: --wait.",
+)
+@click.option(
+    "--timeout",
+    default=1800,
+    type=click.FloatRange(min=0),
+    help="Maximum readiness wait in seconds (default: 1800).",
+)
+@click.option(
+    "--poll-interval",
+    default=5,
+    type=click.FloatRange(min=0),
+    help="Seconds between copied-content checks (default: 5).",
+)
 @click.pass_context
-def history_copy(ctx, history_id, name, all_datasets):
+def history_copy(ctx, history_id, name, all_datasets, wait, timeout, poll_interval):
     """Copy an existing history and set the copy as the current working history.
 
     \b
@@ -438,7 +570,17 @@ def history_copy(ctx, history_id, name, all_datasets):
       galaxy-cli history copy abc123 "working copy" --all-datasets
     """
     client = _get_client(ctx)
-    result = history_mod.copy_history(client, history_id, name=name, all_datasets=all_datasets)
+    if wait:
+        _progress(f"Waiting for copied history contents from {history_id}...")
+    result = history_mod.copy_history(
+        client,
+        history_id,
+        name=name,
+        all_datasets=all_datasets,
+        wait=wait,
+        timeout=timeout,
+        poll_interval=poll_interval,
+    )
     session_mod.set_current_history(result["id"], result["name"])
     _output(
         result,
@@ -1073,8 +1215,19 @@ def tool_search(ctx, query, limit, resolve, use_cache, refresh_cache):
     help="Include verbose fields (help text, EDAM ontology, requirements). "
     "Off by default to keep output compact.",
 )
+@click.option(
+    "--refresh-cache",
+    is_flag=True,
+    help="Refresh the compact input-template cache before showing the tool.",
+)
+@click.option(
+    "--cache/--no-cache",
+    "use_cache",
+    default=True,
+    help="Use the versioned local compact input-template cache. Default: --cache.",
+)
 @click.pass_context
-def tool_show(ctx, tool_id, full):
+def tool_show(ctx, tool_id, full, refresh_cache, use_cache):
     """Show tool inputs and outputs so you know how to call tool run.
 
     \b
@@ -1097,7 +1250,13 @@ def tool_show(ctx, tool_id, full):
       optional  — whether the parameter can be skipped
     """
     client = _get_client(ctx)
-    result = tool_mod.show_tool(client, tool_id, full=full)
+    result = tool_mod.show_tool(
+        client,
+        tool_id,
+        full=full,
+        use_cache=use_cache,
+        refresh_cache=refresh_cache,
+    )
     def _fmt_input(inp, indent=4):
         """Format a single input parameter for human display."""
         prefix = " " * indent
@@ -1184,6 +1343,26 @@ def tool_show(ctx, tool_id, full):
 @click.option("--timeout", default=1800, help="Max wait time in seconds (default: 1800)")
 @click.option("--poll-interval", default=180, help="Seconds between status checks (default: 180)")
 @click.option(
+    "--execution-backend",
+    type=click.Choice(["auto", "strict", "legacy"]),
+    default="auto",
+    show_default=True,
+    help="Tool execution API. Auto prefers strict and only safely falls back when unsupported.",
+)
+@click.option(
+    "--peek-output",
+    default=None,
+    metavar="OUTPUT_NAME",
+    help="Return a bounded preview for this dataset output after a successful blocking run.",
+)
+@click.option(
+    "--peek-lines",
+    default=10,
+    type=click.IntRange(min=1),
+    show_default=True,
+    help="Maximum lines to preview for --peek-output.",
+)
+@click.option(
     "--dry-run-payload",
     is_flag=True,
     help="Print the exact Galaxy POST body and do not submit the tool.",
@@ -1204,6 +1383,9 @@ def tool_run(
     wait,
     timeout,
     poll_interval,
+    execution_backend,
+    peek_output,
+    peek_lines,
     dry_run_payload,
     save_payload,
 ):
@@ -1293,35 +1475,48 @@ def tool_run(
             raise click.UsageError(f"Invalid input format: {inp}. Use key=value")
         k, v = inp.split("=", 1)
         input_dict[k] = v
-    payload = None
+    if peek_output and not wait:
+        raise click.UsageError("--peek-output requires the default --wait behavior.")
+
+    plan = None
     if dry_run_payload or save_payload:
-        payload = tool_mod.build_tool_payload(client, tool_id, hid, inputs=input_dict)
+        plan = tool_mod.build_tool_execution_plan(
+            client,
+            tool_id,
+            hid,
+            inputs=input_dict,
+            execution_backend=execution_backend,
+        )
         if save_payload:
-            _write_json_file(save_payload, payload)
+            _write_json_file(save_payload, plan["post_body"])
         if dry_run_payload:
-            _output(payload, lambda d: click.echo(json.dumps(d, indent=2, default=str)))
-            return
-    if payload is None:
-        result = tool_mod.run_tool(client, tool_id, hid, inputs=input_dict)
-    else:
-        result = tool_mod.run_tool(client, tool_id, hid, inputs=input_dict, payload=payload)
-        result["saved_payload"] = save_payload
-    if result.get("jobs"):
-        job_id = result["jobs"][0]["id"]
-        session_mod.track_job(job_id)
-        if wait:
-            _progress(f"Waiting for job {job_id}...")
-            wait_result = job_mod.wait_for_job(
-                client, job_id, max_wait=timeout, poll_interval=poll_interval,
+            public_plan = tool_mod.execution_plan_for_output(plan)
+            _output(
+                public_plan,
+                lambda d: click.echo(json.dumps(d, indent=2, default=str)),
             )
-            result["wait_result"] = wait_result
-            for j in result.get("jobs", []):
-                if j["id"] == wait_result.get("id"):
-                    j["state"] = wait_result.get("state", j.get("state"))
-            if _json_mode_enabled():
-                result["outputs"] = tool_mod.refresh_output_details(
-                    client, hid, result.get("outputs", []),
-                )
+            return
+    if wait:
+        _progress(f"Waiting for all jobs from tool {tool_id}...")
+    result = tool_mod.run_tool(
+        client,
+        tool_id,
+        hid,
+        inputs=input_dict,
+        execution_backend=execution_backend,
+        wait=wait,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        plan=plan,
+    )
+    if save_payload:
+        result["saved_payload"] = save_payload
+        result["saved_payload_backend"] = plan["execution_backend"]
+    for job in result.get("jobs", []):
+        if job.get("id"):
+            session_mod.track_job(job["id"])
+    if peek_output:
+        _attach_output_peek(client, result, peek_output, peek_lines)
     _output(result, lambda d: click.echo(
         f"Tool {d['tool_id']} submitted. "
         f"Jobs: {[j['id'] for j in d['jobs']]}. "
@@ -1928,11 +2123,11 @@ def repl(ctx):
         except SystemExit:
             pass
         except click.UsageError as exc:
-            skin.error(str(exc))
+            skin.error(_redact_cli_text(exc, ctx.obj))
         except GalaxyBackendError as exc:
-            skin.error(str(exc))
+            skin.error(_redact_cli_text(exc, ctx.obj))
         except Exception as exc:
-            skin.error(f"Error: {exc}")
+            skin.error(f"Error: {_redact_cli_text(exc, ctx.obj)}")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────
@@ -1946,31 +2141,35 @@ def main():
         sys.exit(exc.exit_code)
     except click.UsageError as exc:
         if root_obj["json_mode"]:
-            click.echo(json.dumps({
+            click.echo(_compact_json({
                 "error": True,
                 "category": "usage_error",
-                "message": str(exc),
+                "message": _redact_cli_text(exc, root_obj),
             }))
         else:
-            click.echo(f"Error: {exc}", err=True)
+            click.echo(f"Error: {_redact_cli_text(exc, root_obj)}", err=True)
         sys.exit(EXIT_USER_ERROR)
     except click.ClickException as exc:
         if root_obj["json_mode"]:
-            click.echo(json.dumps({
+            click.echo(_compact_json({
                 "error": True,
                 "category": "click_error",
-                "message": exc.format_message(),
+                "message": _redact_cli_text(exc.format_message(), root_obj),
             }))
         else:
-            exc.show()
+            click.echo(
+                f"Error: {_redact_cli_text(exc.format_message(), root_obj)}",
+                err=True,
+            )
         sys.exit(getattr(exc, "exit_code", EXIT_USER_ERROR))
     except GalaxyBackendError as exc:
         if root_obj["json_mode"]:
-            click.echo(json.dumps(exc.to_dict()))
+            payload = _redact_cli_value(exc.to_dict(), root_obj)
+            click.echo(_compact_json(payload))
         else:
-            msg = str(exc)
+            msg = _redact_cli_text(exc, root_obj)
             if exc.suggestion:
-                msg += f"\n  Suggestion: {exc.suggestion}"
+                msg += f"\n  Suggestion: {_redact_cli_text(exc.suggestion, root_obj)}"
             click.echo(f"Error: {msg}", err=True)
         sys.exit(exc.exit_code)
 

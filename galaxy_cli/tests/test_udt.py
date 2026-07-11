@@ -1,6 +1,8 @@
 """Mock-based tests for Galaxy user-defined tool commands."""
 
 import json
+from pathlib import Path
+import sys
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -102,6 +104,50 @@ def test_create_validation_fails_before_request(representation, change, message)
     client.post.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "status_code, expected_state, retry_safe",
+    [(422, "not_submitted", True), (503, "unknown", False), (None, "unknown", False)],
+)
+def test_create_submission_error_reports_retry_safety(
+    representation, status_code, expected_state, retry_safe
+):
+    from galaxy_cli.core.udt import create_udt
+    from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+    secret = "udt-create-secret-key"
+    client = MagicMock(api_key=secret)
+    client.post.side_effect = GalaxyBackendError(
+        f"create failed with {secret}",
+        category="invalid_request" if status_code == 422 else "server_error",
+        status_code=status_code,
+    )
+
+    with pytest.raises(GalaxyBackendError) as exc:
+        create_udt(client, representation)
+
+    assert secret not in str(exc.value)
+    assert exc.value.submission_state == expected_state
+    assert exc.value.retry_safe is retry_safe
+    assert exc.value.details["tool_id"] == representation["id"]
+    assert exc.value.details["tool_version"] == representation["version"]
+
+
+def test_create_response_without_uuid_is_not_safe_to_retry(representation):
+    from galaxy_cli.core.udt import create_udt
+    from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+    client = MagicMock()
+    client.post.return_value = {"id": "created-without-uuid"}
+
+    with pytest.raises(GalaxyBackendError) as exc:
+        create_udt(client, representation)
+
+    assert exc.value.error_kind == "udt_create_response_invalid"
+    assert exc.value.submission_state == "submitted"
+    assert exc.value.retry_safe is False
+    assert exc.value.details["udt_id"] == "created-without-uuid"
+
+
 def test_list_show_and_delete_paths(representation):
     from galaxy_cli.core.udt import delete_udt, list_udts, show_udt
 
@@ -171,6 +217,10 @@ def test_run_looks_up_uuid_then_posts_to_tools(representation):
     assert "tool_id" not in payload
     assert client.post.call_args.args[0] != "jobs"
     assert result["jobs"] == [{"id": "job-1", "state": "new"}]
+    assert result["success"] is True
+    assert result["state"] == "submitted"
+    assert result["execution_backend"] == "legacy"
+    assert result["tool_id"] == representation["id"]
 
 
 @pytest.mark.parametrize(
@@ -218,6 +268,37 @@ def test_galaxy_input_rejection_message_is_preserved(representation):
     assert "schema" not in str(exc.value).lower()
 
 
+@pytest.mark.parametrize(
+    "status_code, submission_state, retry_safe",
+    [(400, "not_submitted", True), (422, "not_submitted", True), (500, "unknown", False), (None, "unknown", False)],
+)
+def test_run_submission_error_records_retry_safety(
+    representation, status_code, submission_state, retry_safe
+):
+    from galaxy_cli.core.udt import run_udt
+    from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+    tool = _tool_response(representation)
+    client = MagicMock()
+    client.get.return_value = tool
+    client.post.side_effect = GalaxyBackendError(
+        "redacted submission failure",
+        category="invalid_request" if status_code in {400, 422} else "server_error",
+        status_code=status_code,
+    )
+
+    with pytest.raises(GalaxyBackendError) as exc:
+        run_udt(client, tool["uuid"], "history-1", {}, wait=False)
+
+    assert exc.value.submission_state == submission_state
+    assert exc.value.retry_safe is retry_safe
+    assert exc.value.details["history_id"] == "history-1"
+    assert exc.value.details["tool_id"] == representation["id"]
+    assert exc.value.details["tool_uuid"] == tool["uuid"]
+    assert exc.value.details["job_ids"] == []
+    assert exc.value.details["output_ids"] == []
+
+
 def test_wait_success_refreshes_dataset_and_collection_outputs(representation):
     from galaxy_cli.core.udt import run_udt
 
@@ -256,7 +337,15 @@ def test_wait_success_refreshes_dataset_and_collection_outputs(representation):
     )
 
     assert result["jobs"][0]["state"] == "ok"
+    assert result["success"] is True
+    assert result["state"] == "ok"
+    assert result["execution_backend"] == "legacy"
+    assert result["wait_result"] == result["wait_results"][0]
+    assert result["outputs"][0]["output_name"] == "output"
+    assert result["outputs"][0]["src"] == "hda"
     assert result["outputs"][0]["file_size"] == 42
+    assert result["outputs"][1]["output_name"] == "collection output"
+    assert result["outputs"][1]["src"] == "hdca"
     assert result["outputs"][1]["collection_type"] == "list"
     assert call("jobs/job-1") in client.get.call_args_list
 
@@ -277,21 +366,251 @@ def test_wait_failure_raises_clear_error(representation):
         run_udt(client, tool["uuid"], "history-1", {}, poll_interval=0)
 
 
-def test_wait_timeout_is_returned(representation):
+def test_run_rejects_200_response_errors_with_partial_submission_context(
+    representation,
+):
     from galaxy_cli.core.udt import run_udt
+    from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
 
     tool = _tool_response(representation)
     client = MagicMock()
     client.get.return_value = tool
     client.post.return_value = {
         "jobs": [{"id": "job-1", "state": "new"}],
+        "outputs": [{"id": "dataset-1", "name": "output"}],
+        "errors": [{"err_msg": "one mapped element was rejected"}],
+    }
+
+    with pytest.raises(GalaxyBackendError) as exc:
+        run_udt(client, tool["uuid"], "history-1", {}, wait=False)
+
+    assert exc.value.error_kind == "udt_request_rejected"
+    assert exc.value.submission_state == "submitted"
+    assert exc.value.retry_safe is False
+    assert exc.value.details["job_ids"] == ["job-1"]
+    assert exc.value.details["jobs"][0]["state"] == "new"
+    assert exc.value.details["output_ids"] == ["dataset-1"]
+    assert exc.value.details["outputs"][0]["output_name"] == "output"
+
+
+def test_blocking_udt_partial_error_waits_known_job_to_final_state(representation):
+    from galaxy_cli.core.udt import run_udt
+    from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+    tool = _tool_response(representation)
+    client = MagicMock()
+    client.get.side_effect = [
+        tool,
+        {"state": "running", "exit_code": None},
+        {"state": "ok", "exit_code": 0},
+    ]
+    client.post.return_value = {
+        "jobs": [{"id": "job-1", "state": "new"}],
+        "outputs": [{"id": "dataset-1", "name": "output"}],
+        "errors": [{"err_msg": "one mapped element was rejected"}],
+    }
+
+    with pytest.raises(GalaxyBackendError) as exc:
+        run_udt(
+            client,
+            tool["uuid"],
+            "history-1",
+            {},
+            wait=True,
+            timeout=5,
+            poll_interval=0,
+        )
+
+    assert exc.value.error_kind == "udt_request_rejected"
+    assert exc.value.retry_safe is False
+    assert exc.value.details["jobs"] == [
+        {
+            "id": "job-1",
+            "state": "ok",
+            "exit_code": 0,
+            "waited_seconds": 0.0,
+        }
+    ]
+
+
+def test_output_refresh_error_keeps_completed_udt_context(representation):
+    from galaxy_cli.core.udt import run_udt
+    from galaxy_cli.utils.galaxy_backend import EXIT_SERVER_ERROR, GalaxyBackendError
+
+    tool = _tool_response(representation)
+    client = MagicMock()
+    client.get.side_effect = [
+        tool,
+        {"state": "ok", "exit_code": 0},
+        GalaxyBackendError(
+            "lost while refreshing output",
+            category="connection",
+            exit_code=EXIT_SERVER_ERROR,
+        ),
+    ]
+    client.post.return_value = _submission_response()
+
+    with pytest.raises(GalaxyBackendError) as exc:
+        run_udt(client, tool["uuid"], "history-1", {}, poll_interval=0)
+
+    assert exc.value.category == "connection"
+    assert exc.value.error_kind == "output_refresh_failed"
+    assert exc.value.submission_state == "submitted"
+    assert exc.value.retry_safe is False
+    assert exc.value.details["history_id"] == "history-1"
+    assert exc.value.details["tool_id"] == representation["id"]
+    assert exc.value.details["job_ids"] == ["job-1"]
+    assert exc.value.details["jobs"][0]["state"] == "ok"
+    assert exc.value.details["output_ids"] == ["dataset-1", "collection-1"]
+    assert exc.value.details["outputs"][0]["output_name"] == "output"
+
+
+def test_wait_timeout_raises_structured_error(representation):
+    from galaxy_cli.core.udt import run_udt
+    from galaxy_cli.utils.galaxy_backend import EXIT_TIMEOUT, GalaxyBackendError
+
+    tool = _tool_response(representation)
+    client = MagicMock()
+    client.get.side_effect = [tool, {"state": "running", "exit_code": None}]
+    client.post.return_value = {
+        "jobs": [{"id": "job-1", "state": "new"}],
         "outputs": [],
     }
 
-    result = run_udt(client, tool["uuid"], "history-1", {}, timeout=0)
+    with pytest.raises(GalaxyBackendError) as exc:
+        run_udt(client, tool["uuid"], "history-1", {}, timeout=0)
 
-    assert result["jobs"][0]["state"] == "timeout"
-    assert result["wait_results"][0]["state"] == "timeout"
+    assert exc.value.exit_code == EXIT_TIMEOUT
+    assert exc.value.error_kind == "job_timeout"
+    assert exc.value.submission_state == "submitted"
+    assert exc.value.retry_safe is False
+    assert exc.value.details["history_id"] == "history-1"
+    assert exc.value.details["tool_id"] == representation["id"]
+    assert exc.value.details["job_ids"] == ["job-1"]
+    assert exc.value.details["jobs"][0]["state"] == "running"
+
+
+def test_wait_rejects_success_response_without_jobs(representation):
+    from galaxy_cli.core.udt import run_udt
+    from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+    tool = _tool_response(representation)
+    client = MagicMock()
+    client.get.return_value = tool
+    client.post.return_value = {"jobs": [], "outputs": []}
+
+    with pytest.raises(GalaxyBackendError) as exc:
+        run_udt(client, tool["uuid"], "history-1", {})
+
+    payload = exc.value.to_dict()
+    assert payload["error_kind"] == "unknown_submission_state"
+    assert payload["submission_state"] == "unknown"
+    assert payload["retry_safe"] is False
+    assert payload["job_ids"] == []
+
+
+def test_blocking_udt_rejects_malformed_response_members(representation):
+    from galaxy_cli.core.udt import run_udt
+    from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+    tool = _tool_response(representation)
+    client = MagicMock()
+    client.get.return_value = tool
+    client.post.return_value = {
+        "jobs": [{"id": "job-1", "state": "new"}, None],
+        "outputs": [{"id": "dataset-1"}],
+    }
+
+    with pytest.raises(GalaxyBackendError) as exc:
+        run_udt(client, tool["uuid"], "history-1", {})
+
+    assert exc.value.error_kind == "udt_response_invalid"
+    assert exc.value.submission_state == "submitted"
+    assert exc.value.retry_safe is False
+    assert exc.value.details["job_ids"] == ["job-1"]
+    assert exc.value.details["output_ids"] == ["dataset-1"]
+
+
+def test_wait_uses_one_deadline_for_multiple_udt_jobs(representation):
+    from galaxy_cli.core.udt import run_udt
+
+    tool = _tool_response(representation)
+    client = MagicMock()
+    job_states = {
+        "job-1": iter([{"state": "running"}, {"state": "ok", "exit_code": 0}]),
+        "job-2": iter([{"state": "queued"}, {"state": "ok", "exit_code": 0}]),
+    }
+
+    def get(path, params=None):
+        if path == f"unprivileged_tools/{tool['uuid']}":
+            return tool
+        if path.startswith("jobs/"):
+            return next(job_states[path.rsplit("/", 1)[-1]])
+        raise AssertionError((path, params))
+
+    client.get.side_effect = get
+    client.post.return_value = {
+        "jobs": [
+            {"id": "job-1", "state": "new"},
+            {"id": "job-2", "state": "new"},
+        ],
+        "outputs": [],
+    }
+
+    result = run_udt(
+        client,
+        tool["uuid"],
+        "history-1",
+        {},
+        timeout=10,
+        poll_interval=0,
+    )
+
+    assert [job["id"] for job in result["wait_results"]] == ["job-1", "job-2"]
+    assert [job["state"] for job in result["jobs"]] == ["ok", "ok"]
+
+
+def test_create_run_uses_trace_multi_job_and_collection_fixture(representation):
+    from galaxy_cli.core.udt import create_run_udt
+
+    fixture_path = (
+        Path(__file__).with_name("fixtures") / "udt_create_run_multi_job.json"
+    )
+    trace = json.loads(fixture_path.read_text())
+    created = dict(trace["create_response"], representation=representation)
+    poll_indexes = {"job-1": 0, "job-2": 0}
+
+    def get(path, params=None):
+        if path == f"unprivileged_tools/{created['uuid']}":
+            return created
+        if path.startswith("jobs/"):
+            job_id = path.rsplit("/", 1)[-1]
+            index = poll_indexes[job_id]
+            poll_indexes[job_id] += 1
+            return trace["job_poll_rounds"][index][job_id]
+        if path.endswith("/dataset-1"):
+            return trace["output_details"]["dataset-1"]
+        if path.endswith("/dataset_collections/collection-1"):
+            return trace["output_details"]["collection-1"]
+        raise AssertionError((path, params))
+
+    client = MagicMock()
+    client.post.side_effect = [created, trace["submission_response"]]
+    client.get.side_effect = get
+
+    result = create_run_udt(
+        client,
+        representation,
+        "history-1",
+        {},
+        timeout=10,
+        poll_interval=0,
+    )
+
+    assert [job["state"] for job in result["jobs"]] == ["ok", "ok"]
+    assert result["outputs"][0]["file_size"] == 12
+    assert result["outputs"][1]["collection_type"] == "list"
+    assert result["outputs"][1]["element_count"] == 2
 
 
 def test_no_wait_skips_job_poll_and_output_refresh(representation):
@@ -326,6 +645,37 @@ def test_create_run_creates_and_runs_exactly_once(representation):
     assert client.post.call_count == 2
     assert result["create"]["uuid"] == tool["uuid"]
     assert result["jobs"][0]["state"] == "ok"
+    assert result["success"] is True
+    assert result["state"] == "ok"
+    assert result["execution_backend"] == "legacy"
+    assert result["tool_version"] == representation["version"]
+    assert result["wait_result"] == result["wait_results"][0]
+
+
+def test_create_run_is_not_retry_safe_after_create_succeeds(representation):
+    from galaxy_cli.core.udt import create_run_udt
+    from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+    tool = _tool_response(representation)
+    rejected_run = GalaxyBackendError(
+        "run inputs rejected",
+        category="invalid_request",
+        status_code=422,
+    )
+    client = MagicMock()
+    client.post.side_effect = [tool, rejected_run]
+    client.get.return_value = tool
+
+    with pytest.raises(GalaxyBackendError) as exc:
+        create_run_udt(client, representation, "history-1", {})
+
+    payload = exc.value.to_dict()
+    assert payload["submission_state"] == "submitted"
+    assert payload["retry_safe"] is False
+    assert payload["created_tool_uuid"] == tool["uuid"]
+    assert payload["created_udt"]["tool_id"] == representation["id"]
+    assert payload["run_submission_state"] == "not_submitted"
+    assert payload["run_retry_safe"] is True
 
 
 def test_evidence_files_are_complete_and_redacted(tmp_path, representation):
@@ -441,3 +791,61 @@ def test_udt_help_and_cli_json_output_are_stable(tmp_path, representation):
     assert json.loads(result.output) == compact
     assert result.output == json.dumps(compact, separators=(",", ":")) + "\n"
     assert run.call_args.kwargs["wait"] is False
+
+
+def test_udt_timeout_main_returns_nonzero_compact_json(tmp_path):
+    from galaxy_cli.cli import main
+    from galaxy_cli.utils.galaxy_backend import EXIT_TIMEOUT, GalaxyBackendError
+
+    inputs_path = tmp_path / "inputs.json"
+    inputs_path.write_text("{}")
+    error = GalaxyBackendError(
+        "Timed out waiting for Galaxy jobs: job-1 (running)",
+        category="timeout",
+        error_kind="job_timeout",
+        exit_code=EXIT_TIMEOUT,
+        submission_state="submitted",
+        retry_safe=False,
+        details={
+            "history_id": "history-1",
+            "tool_id": "tool-1",
+            "job_ids": ["job-1"],
+            "jobs": [{"id": "job-1", "state": "running", "exit_code": None}],
+        },
+    )
+
+    with (
+        patch.object(
+            sys,
+            "argv",
+            [
+                "galaxy-cli",
+                "--json",
+                "udt",
+                "run",
+                "uuid-1",
+                "--history-id",
+                "history-1",
+                "--inputs-json",
+                str(inputs_path),
+                "--timeout",
+                "0",
+            ],
+        ),
+        patch("galaxy_cli.cli._get_client", return_value=object()),
+        patch("galaxy_cli.cli.udt_mod.run_udt", side_effect=error),
+        patch("click.echo") as echo,
+        pytest.raises(SystemExit) as exc,
+    ):
+        main()
+
+    assert exc.value.code == EXIT_TIMEOUT
+    encoded = echo.call_args.args[0]
+    payload = json.loads(encoded)
+    assert encoded == json.dumps(payload, separators=(",", ":"), default=str)
+    assert payload["success"] is False
+    assert payload["error_kind"] == "job_timeout"
+    assert payload["submission_state"] == "submitted"
+    assert payload["retry_safe"] is False
+    assert payload["job_ids"] == ["job-1"]
+    assert payload["jobs"][0]["state"] == "running"

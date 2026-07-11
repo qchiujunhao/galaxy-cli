@@ -171,8 +171,6 @@ class TestDatasetE2E:
             )
             assert result.get("id") or result.get("status")
             print(f"\n  Uploaded: {result}")
-            if any(wait.get("state") == "timeout" for wait in result.get("wait_results", [])):
-                pytest.skip("Galaxy upload job did not finish within 180s")
 
             # Download
             with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as out:

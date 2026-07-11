@@ -6,7 +6,34 @@ from galaxy_cli.utils.galaxy_backend import (
     EXIT_USER_ERROR,
     GalaxyBackendError,
 )
-from galaxy_cli.core.job import wait_for_job
+from galaxy_cli.core.job import wait_for_jobs
+
+
+def _upload_submission_error(exc, history_id):
+    status_code = getattr(exc, "status_code", None)
+    rejected = status_code in {400, 422}
+    details = dict(getattr(exc, "details", {}) or {})
+    details.update(
+        {
+            "history_id": history_id,
+            "tool_id": "upload1",
+            "job_ids": [],
+            "output_ids": [],
+        }
+    )
+    return GalaxyBackendError(
+        str(exc),
+        category=exc.category,
+        error_kind=(
+            "upload_submission_rejected" if rejected else "upload_submission_unknown"
+        ),
+        exit_code=exc.exit_code,
+        suggestion=exc.suggestion,
+        status_code=status_code,
+        submission_state="not_submitted" if rejected else "unknown",
+        retry_safe=rejected,
+        details=details,
+    )
 
 
 def upload_dataset(
@@ -21,15 +48,87 @@ def upload_dataset(
     poll_interval=30,
 ):
     """Upload a local file to a Galaxy history."""
-    result = client.upload_file(
-        file_path,
-        history_id,
-        file_type=file_type,
-        dbkey=dbkey,
-        upload_timeout=upload_timeout,
-    )
-    outputs = result.get("outputs", [])
-    jobs = result.get("jobs", [])
+    try:
+        result = client.upload_file(
+            file_path,
+            history_id,
+            file_type=file_type,
+            dbkey=dbkey,
+            upload_timeout=upload_timeout,
+        )
+    except GalaxyBackendError as exc:
+        raise _upload_submission_error(exc, history_id) from exc
+    malformed = not isinstance(result, dict)
+    if not isinstance(result, dict):
+        result = {}
+    raw_outputs = result.get("outputs")
+    raw_jobs = result.get("jobs")
+    for value in (raw_outputs, raw_jobs):
+        if value is not None and (
+            not isinstance(value, list)
+            or any(not isinstance(item, dict) for item in value)
+        ):
+            malformed = True
+    outputs = [
+        item for item in (raw_outputs or []) if isinstance(item, dict)
+    ]
+    jobs = [item for item in (raw_jobs or []) if isinstance(item, dict)]
+    job_ids = [job.get("id", "") for job in jobs if job.get("id")]
+    output_ids = [output.get("id", "") for output in outputs if output.get("id")]
+    if wait and malformed:
+        raise GalaxyBackendError(
+            "Galaxy returned a malformed upload submission response.",
+            category="api_error",
+            error_kind="upload_response_invalid",
+            submission_state="submitted" if job_ids or output_ids else "unknown",
+            retry_safe=False,
+            details={
+                "history_id": history_id,
+                "tool_id": "upload1",
+                "job_ids": job_ids,
+                "output_ids": output_ids,
+            },
+        )
+    wait_results = None
+    if wait and not job_ids:
+        raise GalaxyBackendError(
+            "Galaxy returned no jobs for the blocking upload submission.",
+            category="api_error",
+            error_kind="unknown_submission_state",
+            submission_state="unknown",
+            retry_safe=False,
+            details={
+                "history_id": history_id,
+                "tool_id": "upload1",
+                "job_ids": [],
+                "output_ids": output_ids,
+            },
+        )
+    if wait:
+        wait_results = wait_for_jobs(
+            client,
+            job_ids,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            history_id=history_id,
+            tool_id="upload1",
+            output_ids=output_ids,
+        )
+        if not outputs:
+            raise GalaxyBackendError(
+                "Galaxy returned no dataset outputs for the completed upload.",
+                category="api_error",
+                error_kind="upload_outputs_missing",
+                submission_state="submitted",
+                retry_safe=False,
+                details={
+                    "history_id": history_id,
+                    "tool_id": "upload1",
+                    "job_ids": job_ids,
+                    "jobs": wait_results,
+                    "output_ids": [],
+                },
+            )
     if outputs:
         ds = outputs[0]
         uploaded = {
@@ -39,19 +138,32 @@ def upload_dataset(
             "history_id": history_id,
             "file_type": ds.get("extension", file_type),
         }
-        if wait and jobs:
-            uploaded["wait_results"] = [
-                wait_for_job(
-                    client,
-                    job.get("id", ""),
-                    max_wait=timeout,
-                    poll_interval=poll_interval,
-                )
-                for job in jobs
-                if job.get("id")
-            ]
+        if wait:
+            uploaded["wait_results"] = wait_results
             if uploaded["id"]:
-                refreshed = show_dataset(client, uploaded["id"], history_id=history_id)
+                try:
+                    refreshed = show_dataset(
+                        client, uploaded["id"], history_id=history_id
+                    )
+                except GalaxyBackendError as exc:
+                    details = dict(getattr(exc, "details", {}) or {})
+                    details.update(
+                        {
+                            "history_id": history_id,
+                            "tool_id": "upload1",
+                            "job_ids": job_ids,
+                            "jobs": wait_results,
+                            "output_ids": output_ids,
+                        }
+                    )
+                    exc.details = details
+                    exc.error_kind = (
+                        getattr(exc, "error_kind", None)
+                        or "upload_output_refresh_failed"
+                    )
+                    exc.submission_state = "submitted"
+                    exc.retry_safe = False
+                    raise
                 uploaded.update({
                     "state": refreshed.get("state", uploaded["state"]),
                     "file_type": refreshed.get("extension", uploaded["file_type"]),
@@ -196,7 +308,15 @@ def peek_dataset(
     delimiter=None,
 ):
     """Get a preview of dataset contents."""
-    info = client.get(f"datasets/{dataset_id}", params={"data_type": "raw_data", "provider": "base"})
+    info = client.get(
+        f"datasets/{dataset_id}",
+        params={
+            "data_type": "raw_data",
+            "provider": "base",
+            "offset": 0,
+            "limit": lines,
+        },
+    )
     # Some Galaxy deployments expose preview text under `peek`.
     if "peek" in info:
         raw_peek = info["peek"]
@@ -230,29 +350,6 @@ def peek_dataset(
             delimiter,
         )
 
-    # Fallback: try getting raw content directly.
-    try:
-        preview = client.get(f"datasets/{dataset_id}/display", params={"offset": 0, "limit": lines})
-        if isinstance(preview, dict) and "raw" in preview and preview["raw"]:
-            return _peek_result(
-                dataset_id,
-                preview["raw"].strip().split("\n"),
-                lines,
-                max_chars_per_line,
-                max_fields,
-                delimiter,
-            )
-        if isinstance(preview, dict) and "ck_data" in preview and preview["ck_data"]:
-            return _peek_result(
-                dataset_id,
-                str(preview["ck_data"]).strip().split("\n"),
-                lines,
-                max_chars_per_line,
-                max_fields,
-                delimiter,
-            )
-    except Exception:
-        pass
     return {
         "id": dataset_id,
         "lines": [],

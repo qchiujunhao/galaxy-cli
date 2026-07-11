@@ -1,0 +1,60 @@
+{
+  "trace_type": "udt_create_run_multi_job",
+  "create_response": {
+    "id": "udt-encoded-1",
+    "uuid": "11111111-2222-3333-4444-555555555555",
+    "tool_id": "trace-udt",
+    "active": true
+  },
+  "submission_response": {
+    "jobs": [
+      {"id": "job-1", "state": "new", "tool_id": "trace-udt"},
+      {"id": "job-2", "state": "new", "tool_id": "trace-udt"}
+    ],
+    "outputs": [
+      {
+        "id": "dataset-1",
+        "name": "output",
+        "extension": "txt",
+        "history_content_type": "dataset"
+      }
+    ],
+    "output_collections": [
+      {
+        "id": "collection-1",
+        "name": "collection output",
+        "collection_type": "list",
+        "history_content_type": "dataset_collection"
+      }
+    ]
+  },
+  "job_poll_rounds": [
+    {
+      "job-1": {"state": "running", "exit_code": null},
+      "job-2": {"state": "queued", "exit_code": null}
+    },
+    {
+      "job-1": {"state": "ok", "exit_code": 0},
+      "job-2": {"state": "ok", "exit_code": 0}
+    }
+  ],
+  "output_details": {
+    "dataset-1": {
+      "id": "dataset-1",
+      "name": "output",
+      "state": "ok",
+      "extension": "txt",
+      "file_size": 12,
+      "history_content_type": "dataset"
+    },
+    "collection-1": {
+      "id": "collection-1",
+      "name": "collection output",
+      "populated_state": "ok",
+      "history_content_type": "dataset_collection",
+      "collection_type": "list",
+      "element_count": 2,
+      "populated": true
+    }
+  }
+}

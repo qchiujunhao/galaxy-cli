@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 import requests
+from requests.adapters import TimeoutSauce
 
 DEFAULT_CONFIG_DIR = Path.home() / ".galaxy-cli"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.json"
@@ -32,6 +33,20 @@ EXIT_AUTH_ERROR = 3       # 401/403, missing or invalid API key
 EXIT_TIMEOUT = 4          # connection or request timeout
 
 
+def get_with_deadline(client, path, params=None, deadline=None):
+    """GET with an absolute monotonic deadline when the client supports it.
+
+    Lightweight fake clients used by callers and tests can keep implementing
+    only ``get(path, params=None)``; they transparently use that legacy path.
+    """
+    deadline_get = getattr(type(client), "get_with_deadline", None)
+    if callable(deadline_get):
+        return deadline_get(client, path, params=params, deadline=deadline)
+    if params is None:
+        return client.get(path)
+    return client.get(path, params=params)
+
+
 class GalaxyBackendError(Exception):
     """Raised when the Galaxy backend returns an error or is unreachable.
 
@@ -41,12 +56,28 @@ class GalaxyBackendError(Exception):
         suggestion: Optional suggestion for how to fix the error.
     """
 
-    def __init__(self, message, category="unknown", exit_code=EXIT_SERVER_ERROR,
-                 suggestion=None):
+    def __init__(
+        self,
+        message,
+        category="unknown",
+        exit_code=EXIT_SERVER_ERROR,
+        suggestion=None,
+        *,
+        status_code=None,
+        error_kind=None,
+        submission_state=None,
+        retry_safe=None,
+        details=None,
+    ):
         super().__init__(message)
         self.category = category
         self.exit_code = exit_code
         self.suggestion = suggestion
+        self.status_code = status_code
+        self.error_kind = error_kind
+        self.submission_state = submission_state
+        self.retry_safe = retry_safe
+        self.details = dict(details or {})
 
     def to_dict(self):
         """Return a machine-readable error dict."""
@@ -55,8 +86,21 @@ class GalaxyBackendError(Exception):
             "category": self.category,
             "message": str(self),
         }
+        if self.submission_state is not None or self.retry_safe is not None:
+            d["success"] = False
+        if self.error_kind:
+            d["error_kind"] = self.error_kind
+        if self.submission_state is not None:
+            d["submission_state"] = self.submission_state
+        if self.retry_safe is not None:
+            d["retry_safe"] = bool(self.retry_safe)
+        if self.status_code is not None:
+            d["status_code"] = self.status_code
         if self.suggestion:
             d["suggestion"] = self.suggestion
+        for key, value in self.details.items():
+            if key not in d:
+                d[key] = value
         return d
 
 
@@ -274,6 +318,11 @@ class GalaxyClient:
     def _headers(self):
         return {"x-api-key": self.api_key, "Content-Type": "application/json"}
 
+    def redact(self, value):
+        """Remove configured credentials from text destined for output."""
+        text = str(value)
+        return text.replace(self.api_key, "[REDACTED]") if self.api_key else text
+
     def _upload_headers(self):
         return {"x-api-key": self.api_key}
 
@@ -298,16 +347,48 @@ class GalaxyClient:
                     pass
         return min(60.0, self.retry_backoff * (2 ** attempt))
 
-    def _request(self, method, path, **kwargs):
+    @staticmethod
+    def _deadline_error():
+        return GalaxyBackendError(
+            "Galaxy GET deadline expired.",
+            category="timeout",
+            error_kind="request_deadline",
+            exit_code=EXIT_TIMEOUT,
+        )
+
+    def _deadline_remaining(self, deadline):
+        if deadline is None:
+            return None
+        try:
+            remaining = float(deadline) - time.monotonic()
+        except (TypeError, ValueError) as exc:
+            raise GalaxyBackendError(
+                "Invalid absolute request deadline.",
+                category="invalid_request",
+                exit_code=EXIT_USER_ERROR,
+            ) from None
+        if remaining <= 0:
+            raise self._deadline_error()
+        return remaining
+
+    def _request(self, method, path, deadline=None, **kwargs):
         """Issue an HTTP request and normalize transport-layer failures."""
         method = method.upper()
         attempt = 0
         while True:
+            remaining = self._deadline_remaining(deadline)
+            request_timeout = self._timeout_tuple()
+            if remaining is not None:
+                request_timeout = TimeoutSauce(
+                    total=remaining,
+                    connect=min(self.connect_timeout, remaining),
+                    read=min(self.request_timeout, remaining),
+                )
             try:
                 resp = requests.request(
                     method,
                     self._api_url(path),
-                    timeout=self._timeout_tuple(),
+                    timeout=request_timeout,
                     **kwargs,
                 )
             except requests.exceptions.SSLError as exc:
@@ -325,6 +406,13 @@ class GalaxyClient:
                     suggestion="Ensure the Galaxy server is running and reachable.",
                 ) from exc
             except requests.Timeout as exc:
+                if deadline is not None:
+                    raise GalaxyBackendError(
+                        "Galaxy GET did not complete within its polling deadline.",
+                        category="timeout",
+                        error_kind="request_deadline",
+                        exit_code=EXIT_TIMEOUT,
+                    ) from None
                 raise GalaxyBackendError(
                     f"Request to Galaxy timed out after {self.request_timeout}s",
                     category="timeout",
@@ -332,12 +420,18 @@ class GalaxyClient:
                     suggestion="Increase request timeout or check server load.",
                 ) from exc
 
+            self._deadline_remaining(deadline)
             if (
                 method == "GET"
                 and resp.status_code in RETRYABLE_GET_STATUS_CODES
                 and attempt < self.max_get_retries
             ):
-                time.sleep(self._retry_after_seconds(resp, attempt))
+                delay = self._retry_after_seconds(resp, attempt)
+                remaining = self._deadline_remaining(deadline)
+                if remaining is not None and delay >= remaining:
+                    time.sleep(remaining)
+                    raise self._deadline_error()
+                time.sleep(delay)
                 attempt += 1
                 continue
             return resp
@@ -347,6 +441,7 @@ class GalaxyClient:
         try:
             resp.raise_for_status()
         except requests.HTTPError as exc:
+            detail = None
             try:
                 detail = resp.json()
                 if isinstance(detail, dict):
@@ -356,8 +451,7 @@ class GalaxyClient:
             except ValueError:
                 msg = resp.text[:500]
 
-            if self.api_key:
-                msg = str(msg).replace(self.api_key, "[REDACTED]")
+            msg = self.redact(msg)
 
             status = resp.status_code
             if status in (401, 403):
@@ -366,30 +460,56 @@ class GalaxyClient:
                     category="auth",
                     exit_code=EXIT_AUTH_ERROR,
                     suggestion="Check your API key with: galaxy-cli config test",
+                    status_code=status,
                 ) from exc
             elif status == 404:
                 raise GalaxyBackendError(
                     f"Galaxy API not found ({status}): {msg}",
                     category="not_found",
                     exit_code=EXIT_USER_ERROR,
+                    status_code=status,
                 ) from exc
-            elif status == 400:
+            elif status in (400, 422):
+                details = None
+                if status == 422 and isinstance(detail, dict):
+                    errors = detail.get("detail")
+                    if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+                        first = errors[0]
+                        location = first.get("loc") or []
+                        path = ".".join(str(part) for part in location if part != "body")
+                        validation = {
+                            "path": f"$.{path}" if path else "$",
+                            "expected": self.redact(first.get("msg", "valid input")),
+                        }
+                        details = {"validation": validation}
+                        msg = f"validation failed at {validation['path']}: {validation['expected']}"
                 raise GalaxyBackendError(
                     f"Galaxy API bad request ({status}): {msg}",
                     category="invalid_request",
                     exit_code=EXIT_USER_ERROR,
+                    status_code=status,
+                    details=details,
+                ) from exc
+            elif status == 405:
+                raise GalaxyBackendError(
+                    f"Galaxy API method not allowed ({status}): {msg}",
+                    category="method_not_allowed",
+                    exit_code=EXIT_USER_ERROR,
+                    status_code=status,
                 ) from exc
             elif status >= 500:
                 raise GalaxyBackendError(
                     f"Galaxy server error ({status}): {msg}",
                     category="server_error",
                     exit_code=EXIT_SERVER_ERROR,
+                    status_code=status,
                 ) from exc
             else:
                 raise GalaxyBackendError(
                     f"Galaxy API error ({status}): {msg}",
                     category="api_error",
                     exit_code=EXIT_SERVER_ERROR,
+                    status_code=status,
                 ) from exc
 
         if resp.status_code == 204:
@@ -404,6 +524,19 @@ class GalaxyClient:
         resp = self._request(
             "GET",
             path,
+            headers=self._headers(),
+            params=params,
+        )
+        return self._handle_response(resp)
+
+    def get_with_deadline(self, path, params=None, deadline=None):
+        """GET bounded by an absolute ``time.monotonic()`` deadline."""
+        if deadline is None:
+            return self.get(path, params=params)
+        resp = self._request(
+            "GET",
+            path,
+            deadline=deadline,
             headers=self._headers(),
             params=params,
         )

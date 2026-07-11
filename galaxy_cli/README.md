@@ -1,178 +1,174 @@
 # galaxy-cli
 
-CLI harness for the [Galaxy](https://galaxyproject.org/) bioinformatics platform.
-Wraps Galaxy's REST API to provide full command-line and REPL access to histories,
-datasets, tools, workflows, jobs, and libraries.
+`galaxy-cli` is a Python 3.9+ command-line client for the
+[Galaxy](https://galaxyproject.org/) bioinformatics platform. It exposes
+histories, datasets, collections, tools, user-defined tools, workflows, jobs,
+and libraries through compact JSON commands suitable for people and agents.
 
-This package was initially generated with `cli-anything` and then refined into
-the standalone `galaxy-cli` package.
-
-## Prerequisites
-
-- **Python 3.9+**
-- **A running Galaxy server** — this CLI connects to Galaxy via its REST API.
-  - Public: https://usegalaxy.org, https://usegalaxy.eu, https://usegalaxy.org.au
-  - Local: Follow [Galaxy installation docs](https://docs.galaxyproject.org/)
-- **Galaxy API key** — obtain from your Galaxy instance at `<url>/user/api_key`
-
-## Installation
-
-Install from PyPI with `uv` or `pip`:
+## Install and Configure
 
 ```bash
 uv tool install galaxy-cli
 ```
 
+or:
+
 ```bash
 python3 -m pip install galaxy-cli
 ```
 
-For local development from this repository:
+Provide a Galaxy URL and API key:
 
 ```bash
-cd agent-harness
-python3 -m pip install .
+export GALAXY_URL=https://usegalaxy.org
+export GALAXY_API_KEY=your-api-key
+galaxy-cli config test
 ```
 
-Verify installation:
+Secret-file environments can set `GALAXY_API_KEY_FILE` instead. The CLI reads
+the file without printing its contents. Explicit keys and `GALAXY_API_KEY`
+take precedence over the file.
+
+Pass `--history-id` explicitly for concurrent or agent-driven work. Shared
+session state is intended for one active writer.
+
+## Authoritative Blocking Commands
+
+Regular tools, UDTs, and uploads wait by default. History copies also wait by
+default in 1.5.0. One global deadline applies to all jobs or copied contents;
+the timeout is not restarted for each item.
+
+A successful blocking tool result reports `success: true`, final state,
+execution backend, history and tool identity, every job state and exit code,
+and compact final metadata for all dataset and collection outputs. Callers do
+not need routine follow-up `job show`, `dataset show`, `collection show`, or
+history-contents calls.
+
+Any job failure or timeout exits non-zero. Structured failures include
+`submission_state` and `retry_safe`. Never automatically retry a mutation when
+submission is unknown or retry safety is false.
+
+Use `--no-wait` only for an intentionally asynchronous, non-authoritative
+submission result.
+
+## Strict and Legacy Tool Execution
+
+`tool run` supports `--execution-backend auto|strict|legacy`. The default
+`auto` mode prefers strict nested execution through `/api/jobs`, follows the
+tool request, waits for all spawned jobs, and includes implicit collections in
+the final outputs.
+
+Auto mode falls back to legacy `/api/tools` only when the initial strict
+endpoint explicitly returns HTTP 404 or 405. It never falls back after 400 or
+422 input errors, timeouts, connection failures, 5xx errors, unknown submission
+states, or failures after strict submission. Legacy mode retains pipe-key
+flattening for older servers.
+
+Use nested native references in JSON input files:
+
+```json
+{
+  "input": {"src": "hda", "id": "DATASET_ID"},
+  "reads": {"src": "hdca", "id": "COLLECTION_ID"}
+}
+```
+
+Inspect the backend and exact request body without submitting:
 
 ```bash
-which galaxy-cli
-galaxy-cli --version
+galaxy-cli tool run TOOL_ID \
+  --history-id HISTORY_ID \
+  --inputs-json inputs.json \
+  --dry-run-payload
 ```
 
-## AI Agent Skill
+## History Copy
 
-Install the bundled `galaxy-cli` skill after installing the package:
+`history copy` waits for datasets and collections to become ready and returns a
+compact contents map:
+
+```bash
+galaxy-cli history copy SOURCE_HISTORY_ID "working copy" \
+  --timeout 1800 \
+  --poll-interval 10
+```
+
+A copied-content failure or timeout exits non-zero. `--no-wait` preserves the
+immediate-return behavior from 1.4.1.
+
+## Bounded Preview and Tool Cache
+
+Request a bounded preview for one named dataset output:
+
+```bash
+galaxy-cli tool run TOOL_ID \
+  --history-id HISTORY_ID \
+  --inputs-json inputs.json \
+  --peek-output report \
+  --peek-lines 5
+```
+
+The CLI does not preview or download outputs by default. Collection outputs are
+not expanded automatically.
+
+Compact `tool show` templates are cached by Galaxy URL, server version, exact
+tool ID, and tool version:
+
+```bash
+galaxy-cli tool show TOOL_ID --refresh-cache
+galaxy-cli tool show TOOL_ID --no-cache
+```
+
+Validation errors return the failing JSON path, expected type or allowed
+values, and a short correction example without emitting the full schema.
+
+## User-Defined Tools
+
+The existing `udt list`, `show`, `create`, `delete`, `run`, and `create-run`
+commands remain available. Create and run a new UDT with:
+
+```bash
+galaxy-cli udt create-run \
+  --representation-json udt.json \
+  --history-id HISTORY_ID \
+  --inputs-json udt-inputs.json
+```
+
+UDT execution shares the all-job wait and non-zero timeout behavior. A
+successful blocking result can be trusted without routine verification calls.
+
+`--evidence-dir` is retained only as an explicit debug and 1.4.1 compatibility
+option. Normal executions do not need evidence files.
+
+## Output and Help
+
+Compact single-line JSON is the default, and progress goes to stderr. Use
+`--human` for interactive output. Prefer command-specific help over a static
+tutorial:
+
+```bash
+galaxy-cli tool run --help
+galaxy-cli history copy --help
+galaxy-cli udt create-run --help
+```
+
+## Agent Skill
+
+Install the bundled decision-rule skill:
 
 ```bash
 galaxy-cli skill install --agent codex
 galaxy-cli skill install --agent claude
 ```
 
-This copies the packaged skill to `~/.codex/skills/galaxy-cli/SKILL.md` or
-`~/.claude/skills/galaxy-cli/SKILL.md`. Use `galaxy-cli skill path` to inspect
-the packaged source, or `--target-dir` to install into another skills directory.
+Use `galaxy-cli skill path` to locate the packaged source, or pass a relative
+custom destination such as `--target-dir project-skills`.
 
-## Configuration
-
-Set your Galaxy server URL and API key:
+## Tests
 
 ```bash
-# Environment variables (preferred)
-export GALAXY_URL=https://usegalaxy.org
-export GALAXY_API_KEY=your-api-key
-
-# Or use a read-only secret file instead of GALAXY_API_KEY
-unset GALAXY_API_KEY
-export GALAXY_API_KEY_FILE=.secrets/galaxy-api-key
-
-# Or use the config commands
-galaxy-cli config set-url https://usegalaxy.org
-galaxy-cli config set-key your-api-key
-
-# Test connection
-galaxy-cli config test
+python3 -m pytest galaxy_cli/tests -q
 ```
 
-Session state is stored in `~/.galaxy-cli/session.json`. It is intended for a
-single active writer; for parallel automation or multiple concurrent agents,
-pass `--history-id` explicitly instead of relying on shared session state.
-
-## Usage
-
-### One-shot commands
-
-```bash
-# List histories
-galaxy-cli history list
-
-# Create a history
-galaxy-cli history create "My Analysis"
-
-# Upload a file
-galaxy-cli dataset upload data.fastq --history-id abc123
-galaxy-cli dataset upload matrix.tsv --history-id abc123 --upload-timeout 7200
-
-# Search for tools
-galaxy-cli tool search "bowtie" --limit 5
-
-# Run a tool
-galaxy-cli tool run toolshed.g2.bx.psu.edu/repos/.../bowtie2 \
-  --history-id abc123 -i input=dataset-id
-
-# Validate and inspect the exact POST body without submitting
-galaxy-cli tool run toolshed.g2.bx.psu.edu/repos/.../bowtie2 \
-  --history-id abc123 -i input=dataset-id --dry-run-payload
-
-# Check job status
-galaxy-cli job show job-id
-
-# Run a workflow
-galaxy-cli workflow run workflow-id -i 0=dataset-id
-galaxy-cli workflow run workflow-id --history-id abc123 -i 0=dataset-id --dry-run-payload
-
-# Create and run a fresh user-defined tool by UUID
-galaxy-cli udt create-run \
-  --representation-json udt.json \
-  --history-id abc123 \
-  --inputs-json inputs.json
-```
-
-`udt create-run` creates exactly one tool from the inner `GalaxyUserTool`
-representation, runs the UUID returned by Galaxy, waits for all spawned jobs,
-and returns compact output metadata. Use `--evidence-dir evidence` when full,
-redacted request and response evidence is required.
-
-### Machine-readable output
-
-```bash
-galaxy-cli history list | jq .
-galaxy-cli tool show bowtie2 > bowtie2.json
-```
-
-Compact JSON is the default. Use `--human` for human-readable terminal output.
-
-### Human-readable output
-
-```bash
-galaxy-cli --human config show
-galaxy-cli --human history list
-```
-
-### Interactive REPL
-
-```bash
-galaxy-cli
-# Enters interactive mode
-# Type commands without the "galaxy-cli" prefix
-```
-
-## Command Groups
-
-| Group | Description |
-|-------|-------------|
-| `config` | Server connection settings |
-| `history` | Create, list, show, delete, export histories |
-| `dataset` | Upload, download, show, peek, delete datasets |
-| `udt` | List, show, create, run, and deactivate user-defined tools |
-| `tool` | List, search, show, run tools |
-| `job` | List, show, cancel, wait for jobs |
-| `workflow` | Import, export, list, show, run, delete workflows |
-| `invocation` | List, show, cancel, wait for workflow invocations |
-| `library` | Create, list, show, manage shared data libraries |
-| `user` | Current user info |
-| `session` | Local CLI session state |
-
-## Running Tests
-
-```bash
-cd agent-harness
-python3 -m pytest galaxy_cli/tests/ -v -s
-```
-
-Force testing against installed command:
-
-```bash
-CLI_ANYTHING_FORCE_INSTALLED=1 python3 -m pytest galaxy_cli/tests/ -v -s
-```
+Live integration tests remain opt-in and use credentials already present in
+the environment.

@@ -1,0 +1,90 @@
+{
+  "trace_type": "nested_repeat_conditional_tool",
+  "tool": {
+    "id": "trace_nested_tool",
+    "name": "Trace nested tool",
+    "version": "1.2.3",
+    "description": "An anonymized nested tool trace",
+    "inputs": [
+      {
+        "name": "groups",
+        "label": "Groups",
+        "type": "repeat",
+        "min": 1,
+        "inputs": [
+          {
+            "name": "mode_cond",
+            "label": "Mode",
+            "type": "conditional",
+            "test_param": {
+              "name": "mode",
+              "label": "Mode",
+              "type": "select",
+              "options": [["Datasets", "datasets", true], ["Collection", "collection", false]]
+            },
+            "cases": [
+              {
+                "value": "datasets",
+                "inputs": [
+                  {
+                    "name": "reads",
+                    "label": "Reads",
+                    "type": "data",
+                    "multiple": true,
+                    "optional": false
+                  },
+                  {
+                    "name": "trim",
+                    "label": "Trim",
+                    "type": "integer",
+                    "optional": false
+                  },
+                  {
+                    "name": "enabled",
+                    "label": "Enabled",
+                    "type": "boolean",
+                    "optional": false
+                  }
+                ]
+              },
+              {
+                "value": "collection",
+                "inputs": [
+                  {
+                    "name": "reads_collection",
+                    "label": "Reads collection",
+                    "type": "data_collection",
+                    "collection_type": "list",
+                    "optional": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "outputs": [{"name": "out", "format": "tabular", "label": "Output"}]
+  },
+  "inputs": {
+    "groups": [
+      {
+        "mode_cond": {
+          "mode": "datasets",
+          "reads": [
+            {"src": "hda", "id": "dataset-a"},
+            {"src": "hda", "id": "dataset-b"}
+          ],
+          "trim": "5",
+          "enabled": "true"
+        }
+      },
+      {
+        "mode_cond": {
+          "mode": "collection",
+          "reads_collection": {"src": "hdca", "id": "collection-a"}
+        }
+      }
+    ]
+  }
+}

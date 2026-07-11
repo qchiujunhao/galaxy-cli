@@ -261,6 +261,38 @@ class TestHistory:
             },
         )
 
+    def test_copy_history_all_datasets_accepts_intentionally_deleted_content(self):
+        from galaxy_cli.core.history import copy_history
+
+        client = self._mock_client()
+        client.post.return_value = {
+            "id": "h_copy",
+            "name": "Copied History",
+            "state": "new",
+        }
+        client.get.return_value = [
+            {
+                "hid": 4,
+                "id": "d_deleted",
+                "name": "deleted input",
+                "history_content_type": "dataset",
+                "state": "deleted",
+                "extension": "txt",
+                "deleted": True,
+            }
+        ]
+
+        result = copy_history(
+            client,
+            "h1",
+            all_datasets=True,
+            wait=True,
+            poll_interval=0,
+        )
+
+        assert result["contents"][0]["state"] == "deleted"
+        assert result["contents"][0]["deleted"] is True
+
     def test_show_history_with_contents(self):
         from galaxy_cli.core.history import show_history
 
@@ -397,6 +429,31 @@ class TestDataset:
             upload_timeout=7200,
         )
 
+    def test_upload_dataset_wait_rejects_response_without_jobs(self):
+        from galaxy_cli.core.dataset import upload_dataset
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+        client = self._mock_client()
+        client.upload_file.return_value = {
+            "jobs": [],
+            "outputs": [
+                {
+                    "id": "d1",
+                    "name": "matrix.tsv",
+                    "state": "queued",
+                    "extension": "tabular",
+                }
+            ],
+        }
+
+        with pytest.raises(GalaxyBackendError) as exc:
+            upload_dataset(client, "h1", "matrix.tsv", wait=True)
+
+        payload = exc.value.to_dict()
+        assert payload["submission_state"] == "unknown"
+        assert payload["retry_safe"] is False
+        assert payload["output_ids"] == ["d1"]
+
     def test_show_dataset(self):
         from galaxy_cli.core.dataset import show_dataset
 
@@ -493,16 +550,25 @@ class TestDataset:
         assert result["lines"] == ["abcde"]
         assert result["rows"][0]["truncated_chars"] is True
 
-    def test_peek_dataset_supports_ck_data_fallback(self):
+    def test_peek_dataset_bounds_provider_request_at_network_layer(self):
         from galaxy_cli.core.dataset import peek_dataset
 
         client = self._mock_client()
-        client.get.side_effect = [
-            {"dataset_type": "tabular"},
-            {"ck_data": "line1\nline2\nline3\nline4\n"},
-        ]
+        client.get.return_value = {
+            "data": ["line1\n", "line2\n", "line3\n"]
+        }
         result = peek_dataset(client, "d1", lines=3)
+
         assert result["lines"] == ["line1", "line2", "line3"]
+        client.get.assert_called_once_with(
+            "datasets/d1",
+            params={
+                "data_type": "raw_data",
+                "provider": "base",
+                "offset": 0,
+                "limit": 3,
+            },
+        )
 
     def test_delete_dataset(self):
         from galaxy_cli.core.dataset import delete_dataset
@@ -854,7 +920,13 @@ class TestTool:
             "jobs": [{"id": "j1", "state": "new", "tool_id": "fastqc"}],
             "outputs": [{"id": "d2", "name": "FastQC Report", "extension": "html"}],
         }
-        result = run_tool(client, "fastqc", "h1", inputs={"input_file": "d1"})
+        result = run_tool(
+            client,
+            "fastqc",
+            "h1",
+            inputs={"input_file": "d1"},
+            execution_backend="legacy",
+        )
         assert len(result["jobs"]) == 1
         assert result["jobs"][0]["id"] == "j1"
         assert len(result["outputs"]) == 1
@@ -874,7 +946,13 @@ class TestTool:
         }
 
         with pytest.raises(GalaxyBackendError) as exc:
-            run_tool(client, "fastqc", "h1", inputs={"wrong_name": "d1", "input_file": "d1"})
+            run_tool(
+                client,
+                "fastqc",
+                "h1",
+                inputs={"wrong_name": "d1", "input_file": "d1"},
+                execution_backend="legacy",
+            )
 
         assert exc.value.category == "invalid_request"
         assert "Unknown input 'wrong_name'" in str(exc.value)
@@ -895,7 +973,7 @@ class TestTool:
         }
 
         with pytest.raises(GalaxyBackendError) as exc:
-            run_tool(client, "fastqc", "h1", inputs={})
+            run_tool(client, "fastqc", "h1", inputs={}, execution_backend="legacy")
 
         assert exc.value.category == "invalid_request"
         assert "Missing required input 'input_file'" in str(exc.value)
@@ -928,7 +1006,13 @@ class TestTool:
         }
         client.post.return_value = {"jobs": [], "outputs": []}
 
-        run_tool(client, "cat1", "h1", inputs={"input1": dataset_id})
+        run_tool(
+            client,
+            "cat1",
+            "h1",
+            inputs={"input1": dataset_id},
+            execution_backend="legacy",
+        )
 
         _, kwargs = client.post.call_args
         assert kwargs["json_data"]["inputs"]["input1"] == {"src": "hda", "id": dataset_id}
@@ -949,7 +1033,13 @@ class TestTool:
         }
 
         with pytest.raises(GalaxyBackendError) as exc:
-            run_tool(client, "fastqc", "h1", inputs={"input_file": "hdca:collection-1"})
+            run_tool(
+                client,
+                "fastqc",
+                "h1",
+                inputs={"input_file": "hdca:collection-1"},
+                execution_backend="legacy",
+            )
 
         assert exc.value.category == "invalid_request"
         assert "expects data" in str(exc.value)
@@ -977,7 +1067,13 @@ class TestTool:
         }
 
         with pytest.raises(GalaxyBackendError) as exc:
-            run_tool(client, "cut1", "h1", inputs={"style": "drop"})
+            run_tool(
+                client,
+                "cut1",
+                "h1",
+                inputs={"style": "drop"},
+                execution_backend="legacy",
+            )
 
         assert exc.value.category == "invalid_request"
         assert "Invalid select value" in str(exc.value)
@@ -1001,7 +1097,7 @@ class TestTool:
             "output_collections": [{"id": "c1", "name": "paired reads", "collection_type": "paired"}],
         }
 
-        result = run_tool(client, "collection_tool", "h1")
+        result = run_tool(client, "collection_tool", "h1", execution_backend="legacy")
         assert result["outputs"] == [
             {
                 "id": "c1",
@@ -1028,7 +1124,13 @@ class TestTool:
         }
         client.post.return_value = {"jobs": [], "outputs": []}
 
-        run_tool(client, "fastqc", "h1", inputs={"input_file": dataset_id})
+        run_tool(
+            client,
+            "fastqc",
+            "h1",
+            inputs={"input_file": dataset_id},
+            execution_backend="legacy",
+        )
 
         _, kwargs = client.post.call_args
         assert kwargs["json_data"]["inputs"]["input_file"] == {"src": "hda", "id": dataset_id}
@@ -1049,7 +1151,13 @@ class TestTool:
         }
         client.post.return_value = {"jobs": [], "outputs": []}
 
-        run_tool(client, "collection_tool", "h1", inputs={"reads": f"hdca:{dataset_id}"})
+        run_tool(
+            client,
+            "collection_tool",
+            "h1",
+            inputs={"reads": f"hdca:{dataset_id}"},
+            execution_backend="legacy",
+        )
 
         _, kwargs = client.post.call_args
         assert kwargs["json_data"]["inputs"]["reads"] == {"src": "hdca", "id": dataset_id}
@@ -1100,6 +1208,7 @@ class TestTool:
             "bowtie2",
             "h1",
             inputs={"library": {"type": "paired_collection", "input_1": f"hdca:{collection_id}"}},
+            execution_backend="legacy",
         )
 
         _, kwargs = client.post.call_args
@@ -1165,6 +1274,7 @@ class TestTool:
                     {"software_cond": {"software": "bowtie2", "input": f"hdca:{collection_id}"}}
                 ]
             },
+            execution_backend="legacy",
         )
 
         _, kwargs = client.post.call_args
@@ -1218,6 +1328,7 @@ class TestTool:
             "hisat2",
             "h1",
             inputs={"library|type": "single", "library|input_1": f"hda:{dataset_id}"},
+            execution_backend="legacy",
         )
 
         _, kwargs = client.post.call_args
@@ -1281,6 +1392,7 @@ class TestTool:
                 "select_data|countsFile": f"hdca:{collection_id}",
                 "select_data|sample_sheet": f"hda:{dataset_id}",
             },
+            execution_backend="legacy",
         )
 
         _, kwargs = client.post.call_args
@@ -1327,6 +1439,7 @@ class TestTool:
             "section_tool",
             "h1",
             inputs={"flat_data": dataset_ref, "advanced": {"reads": collection_ref}},
+            execution_backend="legacy",
         )
 
         _, kwargs = client.post.call_args
@@ -1368,6 +1481,7 @@ class TestTool:
             "section_tool",
             "h1",
             inputs={"advanced": {"reads": f"hda:{dataset_id}"}},
+            execution_backend="legacy",
         )
 
         _, kwargs = client.post.call_args
@@ -1459,6 +1573,7 @@ class TestTool:
                     },
                 ]
             },
+            execution_backend="legacy",
         )
 
         _, kwargs = client.post.call_args
@@ -1495,6 +1610,7 @@ class TestTool:
                 "input_1": "f9cad7b01a4721358dba0ff950c535fa",
                 "adapter": "AGATCGGAAGAGC",
             },
+            execution_backend="legacy",
         )
 
         _, kwargs = client.post.call_args
@@ -1518,7 +1634,13 @@ class TestTool:
         }
         client.post.return_value = {"jobs": [], "outputs": []}
 
-        run_tool(client, "cutadapt", "h1", inputs={"adapter": "hda:not-a-dataset"})
+        run_tool(
+            client,
+            "cutadapt",
+            "h1",
+            inputs={"adapter": "hda:not-a-dataset"},
+            execution_backend="legacy",
+        )
 
         _, kwargs = client.post.call_args
         assert kwargs["json_data"]["inputs"]["adapter"] == "hda:not-a-dataset"
@@ -1661,13 +1783,73 @@ class TestJob:
         result = wait_for_job(client, "j1", poll_interval=0)
         assert result["state"] == "ok"
 
+    @pytest.mark.parametrize(
+        "state",
+        ["error", "deleted", "paused", "failed_metadata"],
+    )
+    def test_wait_for_job_failure_states_raise(self, state):
+        from galaxy_cli.core.job import wait_for_job
+        from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+        client = self._mock_client()
+        client.get.return_value = {"state": state, "exit_code": 1}
+
+        with pytest.raises(GalaxyBackendError) as exc:
+            wait_for_job(client, "j1", poll_interval=0)
+
+        assert exc.value.category == "job_failed"
+        assert exc.value.to_dict()["jobs"][0]["state"] == state
+
+    def test_wait_for_jobs_poll_error_keeps_execution_context(self):
+        from galaxy_cli.core.job import wait_for_jobs
+        from galaxy_cli.utils.galaxy_backend import (
+            EXIT_SERVER_ERROR,
+            GalaxyBackendError,
+        )
+
+        client = self._mock_client()
+        client.get.side_effect = GalaxyBackendError(
+            "Galaxy server error (503): busy",
+            category="server_error",
+            exit_code=EXIT_SERVER_ERROR,
+            status_code=503,
+        )
+
+        with pytest.raises(GalaxyBackendError) as exc:
+            wait_for_jobs(
+                client,
+                ["j1", "j2"],
+                history_id="h1",
+                tool_id="tool-1",
+                request_ids=["request-1"],
+                output_ids=["output-1"],
+            )
+
+        payload = exc.value.to_dict()
+        assert payload["submission_state"] == "submitted"
+        assert payload["retry_safe"] is False
+        assert payload["job_ids"] == ["j1", "j2"]
+        assert [job["state"] for job in payload["jobs"]] == ["unknown", "unknown"]
+        assert payload["history_id"] == "h1"
+        assert payload["tool_id"] == "tool-1"
+        assert payload["request_ids"] == ["request-1"]
+        assert payload["output_ids"] == ["output-1"]
+
     def test_wait_for_job_timeout(self):
         from galaxy_cli.core.job import wait_for_job
+        from galaxy_cli.utils.galaxy_backend import (
+            EXIT_TIMEOUT,
+            GalaxyBackendError,
+        )
 
         client = self._mock_client()
         client.get.return_value = {"state": "running"}
-        result = wait_for_job(client, "j1", max_wait=0, poll_interval=1)
-        assert result["state"] == "timeout"
+        with pytest.raises(GalaxyBackendError) as exc:
+            wait_for_job(client, "j1", max_wait=0, poll_interval=1)
+
+        assert exc.value.category == "timeout"
+        assert exc.value.exit_code == EXIT_TIMEOUT
+        assert exc.value.to_dict()["jobs"][0]["state"] == "running"
 
 
 # ── Workflow Tests ───────────────────────────────────────────────────────
