@@ -305,6 +305,10 @@ galaxy-cli workflow run "$WF" \
           </p>
           <p>
             Resume a submitted receipt instead of repeating a mutation.
+            A mutation result's <code>operation_receipt</code> field is the
+            receipt ID string, not an object. Pass it directly to
+            <code>operation show</code> or <code>operation resume</code>;
+            those commands return the full receipt object.
             Metadata cache inspection never returns cached schemas, values, or
             credentials. <code>--output-file PATH</code> atomically saves the
             complete redacted success or error result while stdout contains a

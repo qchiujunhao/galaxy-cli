@@ -155,6 +155,17 @@ command. No next command repeats a mutating submission. Unknown state or
 
 ## Operation receipt and resume state machine
 
+Mutation results use one stable reference shape:
+
+```json
+{"operation_receipt":"RECEIPT_ID"}
+```
+
+`operation_receipt` is always a string ID, including error details. It is not
+the receipt record. Pass the string directly to `operation show` or
+`operation resume`; those commands return the full receipt object in their
+result data.
+
 Receipts are private, atomic JSON records containing:
 
 - receipt ID, operation type, payload hash, and timestamps;

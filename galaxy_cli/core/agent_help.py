@@ -19,6 +19,15 @@ COMMAND_ALIASES = {
 }
 
 
+RECEIPT_ID_RESULT = {
+    "operation_receipt": {
+        "type": "string",
+        "format": "receipt_id",
+        "description": "Pass this value directly to operation show or operation resume.",
+    },
+}
+
+
 COMMAND_HELP = {
     "tool.run": {
         "usage": "galaxy-cli tool run TOOL_ID --history HID --inputs @inputs.json",
@@ -33,6 +42,7 @@ COMMAND_HELP = {
             "dataset": {"src": "hda", "id": "DATASET_ID"},
             "collection": {"src": "hdca", "id": "COLLECTION_ID"},
         },
+        "result_fields": RECEIPT_ID_RESULT,
         "safety": [
             "do not retry when submission_state is unknown",
             "trust a successful blocking result",
@@ -54,6 +64,7 @@ COMMAND_HELP = {
         "usage": "galaxy-cli history copy HISTORY_ID --name NAME",
         "required": ["history_id"],
         "defaults": {"wait": True, "timeout": 1800, "poll_interval": 5},
+        "result_fields": RECEIPT_ID_RESULT,
         "safety": ["trust the successful blocking readiness result"],
     },
     "history.list": {
@@ -77,6 +88,7 @@ COMMAND_HELP = {
             "file_type": "auto",
             "polling": "adaptive:5,10,20,30",
         },
+        "result_fields": RECEIPT_ID_RESULT,
         "safety": ["do not retry an unknown submission"],
     },
     "dataset.peek": {
@@ -104,6 +116,7 @@ COMMAND_HELP = {
             "timeout": 1800,
             "polling": "adaptive:5,10,20,30",
         },
+        "result_fields": RECEIPT_ID_RESULT,
         "safety": ["do not retry an unknown submission; resume its receipt"],
     },
     "workflow.run": {
@@ -114,6 +127,7 @@ COMMAND_HELP = {
             "timeout": 1800,
             "polling": "adaptive:5,10,20,30",
         },
+        "result_fields": RECEIPT_ID_RESULT,
         "safety": ["trust the successful blocking result"],
     },
     "job.diagnose": {
@@ -126,7 +140,27 @@ COMMAND_HELP = {
         "usage": "galaxy-cli operation resume RECEIPT_ID",
         "required": ["receipt_id"],
         "defaults": {"timeout": 1800, "polling": "adaptive:5,10,20,30"},
+        "result_fields": {
+            "id": {
+                "type": "string",
+                "format": "receipt_id",
+                "description": "The resumed command returns the full receipt object in data.",
+            },
+        },
         "safety": ["resume polls known records and never replays an unknown POST"],
+    },
+    "operation.show": {
+        "usage": "galaxy-cli operation show RECEIPT_ID",
+        "required": ["receipt_id"],
+        "defaults": {},
+        "result_fields": {
+            "id": {
+                "type": "string",
+                "format": "receipt_id",
+                "description": "This command returns the full receipt object in data.",
+            },
+        },
+        "safety": ["show is read-only"],
     },
 }
 

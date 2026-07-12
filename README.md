@@ -119,6 +119,10 @@ Mutating operations create secret-free receipts. If a request is interrupted:
 galaxy-cli operation resume RECEIPT_ID
 ```
 
+In compact results and envelope `data`, `operation_receipt` is the receipt ID
+string itself, not a nested object. Pass it directly to `operation show` or
+`operation resume`. Those commands return the full receipt object.
+
 Resume discovers known requests, jobs, and outputs, waits against one deadline,
 refreshes final metadata, and never replays an ordinary submission POST. If
 `submission_state` is `unknown` or `retry_safe` is false, do not resubmit.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.1 — 2026-07-11
+
+- Define the existing `operation_receipt` result field as a string receipt ID
+  in structured help and documentation. `operation show` and `operation
+  resume` return the full receipt object. The 1.x JSON wire format is
+  unchanged.
+
 ## 1.6.0 — 2026-07-11
 
 - Add one JSON-object input loader for tool and UDT execution. The new

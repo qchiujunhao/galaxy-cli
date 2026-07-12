@@ -55,6 +55,9 @@ seconds. Explicit `--poll-interval N` selects a fixed interval.
 Trust successful blocking and `operation resume` results. Do not routinely
 re-query final jobs or outputs. Never repeat a mutation when
 `submission_state` is unknown or `retry_safe` is false.
+Mutation results expose `operation_receipt` as a string receipt ID, not an
+object. Pass that string directly to `operation show` or `operation resume`;
+those commands return the full receipt object.
 TUS resume accepts mutation only from a private local receipt and an unchanged
 source file. Large-file recovery may require a complete SHA-256 read before
 resume; progress is written to stderr and Ctrl-C cancels the scan.

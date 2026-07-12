@@ -251,6 +251,29 @@ def test_structured_help_is_bounded_stable_and_canonical():
     get_client.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "command",
+    ["tool.run", "history.copy", "dataset.upload", "udt.create-run", "workflow.run"],
+)
+def test_structured_help_declares_operation_receipt_as_string_id(command):
+    from galaxy_cli.core.agent_help import command_help
+
+    field = command_help(command)["result_fields"]["operation_receipt"]
+
+    assert field["type"] == "string"
+    assert field["format"] == "receipt_id"
+
+
+@pytest.mark.parametrize("command", ["operation.show", "operation.resume"])
+def test_structured_help_distinguishes_full_receipt_results(command):
+    from galaxy_cli.core.agent_help import command_help
+
+    result = command_help(command)
+
+    assert "operation_receipt" not in result["result_fields"]
+    assert result["result_fields"]["id"]["format"] == "receipt_id"
+
+
 def test_usage_errors_add_guidance_without_executing_a_guess():
     with patch("galaxy_cli.cli.tool_mod.run_tool") as run_tool:
         code, _, unknown = _run_main(

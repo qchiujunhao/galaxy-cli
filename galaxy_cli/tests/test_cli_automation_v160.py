@@ -387,6 +387,25 @@ def test_envelope_unknown_submission_has_resume_and_no_rerun():
     assert secret not in rendered
 
 
+def test_shared_receipt_helper_exposes_string_id_on_success_and_error():
+    from galaxy_cli.cli import _operation_receipt
+    from galaxy_cli.utils.galaxy_backend import GalaxyBackendError
+
+    result = {}
+    error = GalaxyBackendError("interrupted")
+    with patch(
+        "galaxy_cli.cli.operation_mod.create_receipt",
+        return_value={"id": "receipt-1"},
+    ):
+        _operation_receipt("tool", {}, result=result)
+        _operation_receipt("tool", {}, error=error)
+
+    assert result["operation_receipt"] == "receipt-1"
+    assert isinstance(result["operation_receipt"], str)
+    assert error.details["operation_receipt"] == "receipt-1"
+    assert isinstance(error.details["operation_receipt"], str)
+
+
 def test_backend_validation_fields_are_additive_and_mechanical():
     from galaxy_cli.cli import _backend_error_payload
     from galaxy_cli.utils.galaxy_backend import GalaxyBackendError

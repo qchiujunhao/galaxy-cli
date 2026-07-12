@@ -51,7 +51,9 @@ Do not load the full README when structured help answers the syntax question.
 
 - Follow returned `next_commands` when envelope or agent mode provides them.
 - Otherwise use `job diagnose JOB_ID` for one failed job.
-- If a receipt is present, use `operation resume RECEIPT_ID`.
+- `operation_receipt` in a mutation result is the string receipt ID, not an
+  object. Pass it directly to `operation show` or `operation resume`.
+- `operation show` and `operation resume` return the full receipt object.
 - Never replay a mutating command when `submission_state` is `unknown` or
   `retry_safe` is false.
 - A timeout or observation failure is not evidence that submission failed.
