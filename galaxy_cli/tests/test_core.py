@@ -495,7 +495,7 @@ class TestDataset:
 
         client = self._mock_client()
         client.get.return_value = {"id": "d1", "name": "x", "state": "ok", "extension": "bed"}
-        result = show_dataset(client, "d1", history_id="h1")
+        show_dataset(client, "d1", history_id="h1")
         client.get.assert_called_with("histories/h1/contents/d1")
 
     def test_download_dataset(self, tmp_path):

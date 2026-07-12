@@ -35,6 +35,7 @@
         <a href="#quickstart">Quickstart</a>
         <a href="#reliability">Reliability</a>
         <a href="#inputs">Inputs</a>
+        <a href="#automation">Automation</a>
         <a href="#validation">Validation</a>
         <a href="#examples">Examples</a>
         <a href="#commands">Commands</a>
@@ -79,8 +80,8 @@
 <span class="tok-out">bbd44e69cb8906b5...</span>
 
 <span class="tok-prompt">$</span> <span class="tok-cmd">galaxy-cli</span> tool run <span class="tok-str">"$MULTIQC_TOOL"</span> <span class="tok-punc">\</span>
-  <span class="tok-flag">--history-id</span> <span class="tok-str">"$HID"</span> <span class="tok-punc">\</span>
-  <span class="tok-flag">--inputs-json</span> multiqc_inputs.json
+  <span class="tok-flag">--history</span> <span class="tok-str">"$HID"</span> <span class="tok-punc">\</span>
+  <span class="tok-flag">--inputs</span> @multiqc_inputs.json
 
 <span class="tok-punc">{</span><span class="tok-key">"success"</span><span class="tok-punc">:</span><span class="tok-num">true</span><span class="tok-punc">,</span><span class="tok-key">"state"</span><span class="tok-punc">:</span><span class="tok-str">"ok"</span><span class="tok-punc">,</span>
  <span class="tok-key">"execution_backend"</span><span class="tok-punc">:</span><span class="tok-str">"strict"</span><span class="tok-punc">,</span>
@@ -158,18 +159,18 @@ galaxy-cli config test</code></pre>
             <pre><code>HID=$(galaxy-cli history create "analysis" | jq -r .id)
 FASTQC_TOOL=$(galaxy-cli tool search fastqc --limit 5 | jq -r '.[0].id')
 DS=$(galaxy-cli dataset upload reads.fastq.gz \
-  --history-id "$HID" \
+  --history "$HID" \
   --file-type fastqsanger.gz | jq -r .id)</code></pre>
           </li>
           <li>
             <h3>Run a Galaxy tool</h3>
             <pre><code>cat &gt; tool_inputs.json &lt;&lt;EOF
-{"input_file": "hda:$DS"}
+{"input_file": {"src": "hda", "id": "$DS"}}
 EOF
 
 galaxy-cli tool run "$FASTQC_TOOL" \
-  --history-id "$HID" \
-  --inputs-json tool_inputs.json</code></pre>
+  --history "$HID" \
+  --inputs @tool_inputs.json</code></pre>
           </li>
         </ol>
       </section>
@@ -198,12 +199,12 @@ galaxy-cli tool run "$FASTQC_TOOL" \
           </p>
         </div>
         <pre><code>galaxy-cli tool run "$TOOL_ID" \
-  --history-id "$HID" \
-  --inputs-json inputs.json \
+  --history "$HID" \
+  --inputs @inputs.json \
   --execution-backend auto
 
 galaxy-cli history copy "$SOURCE_HID" \
-  "working copy" \
+  --name "working copy" \
   --timeout 1800 \
   --poll-interval 10</code></pre>
       </section>
@@ -213,9 +214,10 @@ galaxy-cli history copy "$SOURCE_HID" \
           <p class="eyebrow">Input encoding</p>
           <h2>Mirror the tool schema</h2>
           <p>
-            Use <code>--inputs-json</code> for repeats, conditionals,
-            collections, and tools like MultiQC. Check your instance with
-            <code>galaxy-cli tool show TOOL_ID</code>, then write JSON that
+            Use <code>--inputs @PATH</code> for repeats, conditionals,
+            collections, and tools like MultiQC. Inline JSON and stdin via
+            <code>--inputs -</code> are also supported. Check your instance with
+            <code>galaxy-cli tool inputs TOOL_ID</code>, then write JSON that
             follows those input names. Strict execution preserves nested
             Galaxy input objects; the selectable legacy backend retains the
             established pipe-key flattening behavior for older servers.
@@ -274,20 +276,49 @@ galaxy-cli history copy "$SOURCE_HID" \
           </p>
         </div>
         <pre><code>galaxy-cli tool run cat1 \
-  --history-id "$HID" \
+  --history "$HID" \
   -i input1="$DATASET_ID" \
   --dry-run-payload
 
 galaxy-cli workflow run "$WF" \
-  --history-id "$HID" \
+  --history "$HID" \
   -i 0="$DATASET_ID" \
   --dry-run-payload
 
 galaxy-cli workflow run "$WF" \
-  --history-id "$HID" \
+  --history "$HID" \
   -i 0="$DATASET_ID" \
   --save-payload workflow_payload.json \
   --wait</code></pre>
+      </section>
+
+      <section class="band split" id="automation">
+        <div>
+          <p class="eyebrow">Agent automation</p>
+          <h2>Bounded output and recoverable operations</h2>
+          <p>
+            Structured help returns a compact command contract without a full
+            documentation scan. <code>--agent</code> enables envelope v1,
+            a 128 KiB stdout budget, a 1000-node traversal budget, stderr-only
+            progress, actionable errors, and safe mechanical next commands. It
+            never chooses tools or scientific parameters.
+          </p>
+          <p>
+            Resume a submitted receipt instead of repeating a mutation.
+            Metadata cache inspection never returns cached schemas, values, or
+            credentials. <code>--output-file PATH</code> atomically saves the
+            complete redacted success or error result while stdout contains a
+            bounded summary.
+          </p>
+        </div>
+        <pre><code>galaxy-cli help tool.run --json
+galaxy-cli --agent tool run "$TOOL_ID" \
+  --history "$HID" --inputs @inputs.json
+
+galaxy-cli operation resume "$RECEIPT_ID"
+galaxy-cli --agent --output-file result.json cache stats
+galaxy-cli cache stats
+galaxy-cli cache warm --server --tools</code></pre>
       </section>
 
       <section class="band" id="examples">
@@ -313,8 +344,8 @@ galaxy-cli task workflow "$WF" \
             <h3>Create and run a user-defined tool</h3>
             <pre><code>galaxy-cli udt create-run \
   --representation-json udt.json \
-  --history-id "$HID" \
-  --inputs-json udt-inputs.json</code></pre>
+  --history "$HID" \
+  --inputs @udt-inputs.json</code></pre>
           </article>
           <article>
             <h3>Discover tools and input names</h3>
@@ -328,24 +359,24 @@ galaxy-cli tool show "$MULTIQC_TOOL" \
           <article>
             <h3>Create and inspect a history</h3>
             <pre><code>HID=$(galaxy-cli history create "qc $(date +%F)" | jq -r .id)
-COPY=$(galaxy-cli history copy "$HID" "working copy" | jq -r .id)
+COPY=$(galaxy-cli history copy "$HID" --name "working copy" | jq -r .id)
 galaxy-cli history show "$HID"
 galaxy-cli history show "$HID" --contents
-galaxy-cli dataset list --history-id "$HID"</code></pre>
+galaxy-cli dataset list --history "$HID"</code></pre>
           </article>
           <article>
             <h3>Upload and inspect datasets</h3>
             <pre><code>R1=$(galaxy-cli dataset upload reads_R1.fastq.gz \
-  --history-id "$HID" \
+  --history "$HID" \
   --file-type fastqsanger.gz | jq -r .id)
 
-galaxy-cli dataset show "$R1" --history-id "$HID"
-galaxy-cli dataset peek "$R1" --lines 5</code></pre>
+galaxy-cli dataset show "$R1" --history "$HID"
+galaxy-cli dataset preview "$R1" --head 5</code></pre>
           </article>
           <article>
             <h3>Create collections</h3>
             <pre><code>PAIR=$(galaxy-cli collection create sampleA \
-  --history-id "$HID" \
+  --history "$HID" \
   --collection-type paired \
   --forward "$R1" \
   --reverse "$R2" | jq -r .id)
@@ -355,17 +386,17 @@ galaxy-cli collection show "$PAIR"</code></pre>
           <article>
             <h3>Run FastQC with JSON inputs</h3>
             <pre><code>cat &gt; fastqc_inputs.json &lt;&lt;EOF
-{"input_file": "hda:$R1"}
+{"input_file": {"src": "hda", "id": "$R1"}}
 EOF
 
 galaxy-cli tool run "$FASTQC_TOOL" \
-  --history-id "$HID" \
-  --inputs-json fastqc_inputs.json \
+  --history "$HID" \
+  --inputs @fastqc_inputs.json \
   --dry-run-payload
 
 galaxy-cli tool run "$FASTQC_TOOL" \
-  --history-id "$HID" \
-  --inputs-json fastqc_inputs.json \
+  --history "$HID" \
+  --inputs @fastqc_inputs.json \
   --peek-output html_file \
   --peek-lines 5</code></pre>
           </article>
@@ -395,14 +426,13 @@ galaxy-cli tool run "$FASTQC_TOOL" \
 EOF
 
 galaxy-cli tool run "$MULTIQC_TOOL" \
-  --history-id "$HID" \
-  --inputs-json multiqc_inputs.json</code></pre>
+  --history "$HID" \
+  --inputs @multiqc_inputs.json</code></pre>
           </article>
           <article>
             <h3>Debug failed jobs</h3>
-            <pre><code>galaxy-cli job list --history-id "$HID" --state error
-galaxy-cli job show "$JOB_ID"
-galaxy-cli job show "$JOB_ID" --logs
+            <pre><code>galaxy-cli job list --history "$HID" --state error
+galaxy-cli job diagnose "$JOB_ID"
 galaxy-cli job wait "$JOB_ID" --timeout 1800</code></pre>
           </article>
           <article>
@@ -416,11 +446,11 @@ galaxy-cli history export "$HID"</code></pre>
             <pre><code>WF=$(galaxy-cli workflow import workflow.ga | jq -r .id)
 galaxy-cli workflow show "$WF"
 galaxy-cli workflow run "$WF" \
-  --history-id "$HID" \
+  --history "$HID" \
   -i 0="$R1" \
   --dry-run-payload
 galaxy-cli workflow run "$WF" \
-  --history-id "$HID" \
+  --history "$HID" \
   -i 0="$R1" \
   --wait
 galaxy-cli workflow export "$WF" -o workflow.ga</code></pre>

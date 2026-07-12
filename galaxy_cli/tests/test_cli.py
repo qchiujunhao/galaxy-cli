@@ -3,7 +3,6 @@
 import inspect
 import json
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -464,7 +463,7 @@ class TestCli:
             execution_backend="auto",
             wait=True,
             timeout=1800,
-            poll_interval=180,
+            poll_interval=None,
             plan=None,
         )
 
@@ -688,7 +687,7 @@ class TestCli:
             execution_backend="auto",
             wait=True,
             timeout=1800,
-            poll_interval=180,
+            poll_interval=None,
             plan=None,
         )
         data = json.loads(result.stdout)
@@ -794,7 +793,7 @@ class TestCli:
             execution_backend="auto",
             wait=False,
             timeout=1800,
-            poll_interval=180,
+            poll_interval=None,
             plan=plan,
         )
 

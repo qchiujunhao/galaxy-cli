@@ -14,6 +14,7 @@ from galaxy_cli.utils.galaxy_backend import (
 
 from galaxy_cli.core import job as job_mod
 from galaxy_cli.core import metadata_cache
+from galaxy_cli.core.polling import deadline_after, remaining, sleep_for_poll
 
 
 _GALAXY_ID_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
@@ -135,12 +136,16 @@ def _tool_show_cache_context(client):
         server_version = _server_version_key(metadata_cache.server_version(client))
     except (AttributeError, GalaxyBackendError):
         return None
-    return client.url, server_version
+    return metadata_cache.server_identity(client.url), server_version
 
 
 def _read_tool_show_cache(client, server_version, requested_tool_id):
-    alias_key = [client.url, server_version, requested_tool_id]
-    alias = metadata_cache.read("tool-schema-alias", alias_key)
+    identity = metadata_cache.server_identity(client.url)
+    secrets = (getattr(client, "api_key", ""),)
+    alias_key = [identity, server_version, requested_tool_id]
+    alias = metadata_cache.read(
+        "tool-schema-alias", alias_key, secrets=secrets
+    )
     if not isinstance(alias, dict):
         return None
     exact_id = alias.get("exact_tool_id")
@@ -148,7 +153,9 @@ def _read_tool_show_cache(client, server_version, requested_tool_id):
     if not isinstance(exact_id, str) or not isinstance(tool_version, str):
         return None
     result = metadata_cache.read(
-        "tool-schema", [client.url, server_version, exact_id, tool_version]
+        "tool-schema",
+        [identity, server_version, exact_id, tool_version],
+        secrets=secrets,
     )
     if not isinstance(result, dict):
         return None
@@ -160,24 +167,39 @@ def _read_tool_show_cache(client, server_version, requested_tool_id):
 def _write_tool_show_cache(client, server_version, requested_tool_id, result):
     exact_id = result.get("id", requested_tool_id)
     tool_version = result.get("version", "")
+    identity = metadata_cache.server_identity(client.url)
+    secrets = (getattr(client, "api_key", ""),)
     path = metadata_cache.write(
-        "tool-schema", [client.url, server_version, exact_id, tool_version], result
+        "tool-schema",
+        [identity, server_version, exact_id, tool_version],
+        result,
+        secrets=secrets,
     )
     metadata_cache.write(
         "tool-schema-alias",
-        [client.url, server_version, requested_tool_id],
+        [identity, server_version, requested_tool_id],
         {"exact_tool_id": exact_id, "tool_version": tool_version},
+        secrets=secrets,
     )
     return path
 
 
 def _read_tool_cache(client, server_version):
-    tools = metadata_cache.read("tool-search", [client.url, server_version])
+    tools = metadata_cache.read(
+        "tool-search",
+        [metadata_cache.server_identity(client.url), server_version],
+        secrets=(getattr(client, "api_key", ""),),
+    )
     return tools if isinstance(tools, list) else None
 
 
 def _write_tool_cache(client, server_version, tools):
-    return metadata_cache.write("tool-search", [client.url, server_version], tools)
+    return metadata_cache.write(
+        "tool-search",
+        [metadata_cache.server_identity(client.url), server_version],
+        tools,
+        secrets=(getattr(client, "api_key", ""),),
+    )
 
 
 def _load_cached_tools(client, refresh_cache=False):
@@ -1525,6 +1547,7 @@ def _post_failure_state(error):
 
 
 def _poll_tool_request(client, request_id, deadline, poll_interval):
+    poll_attempt = 0
     while True:
         state = _tool_request_state(
             get_with_deadline(
@@ -1545,8 +1568,8 @@ def _poll_tool_request(client, request_id, deadline, poll_interval):
                 retry_safe=False,
                 details={"request_ids": [request_id], "request_state": state},
             )
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        seconds_left = deadline - time.monotonic()
+        if seconds_left <= 0:
             raise _make_backend_error(
                 f"Timed out waiting for tool request {request_id} to submit.",
                 category="timeout",
@@ -1556,7 +1579,9 @@ def _poll_tool_request(client, request_id, deadline, poll_interval):
                 retry_safe=False,
                 details={"request_ids": [request_id], "request_state": state},
             )
-        time.sleep(min(max(0, poll_interval), remaining))
+        poll_attempt = sleep_for_poll(
+            poll_attempt, deadline, poll_interval=poll_interval
+        )
 
 
 def _base_run_result(plan, backend, state):
@@ -1587,6 +1612,7 @@ def _run_legacy(client, plan, wait, timeout, poll_interval):
     body = plan["post_body"]
     resolved_tool_id = plan.get("tool_id", body.get("tool_id", ""))
     response = client.post("tools", json_data=body)
+    deadline = deadline_after(timeout)
     if not isinstance(response, dict):
         raise _make_backend_error(
             "Galaxy returned an invalid legacy tool response.",
@@ -1608,11 +1634,12 @@ def _run_legacy(client, plan, wait, timeout, poll_interval):
                 jobs = job_mod.wait_for_jobs(
                     client,
                     job_ids,
-                    timeout=timeout,
+                    timeout=remaining(deadline),
                     poll_interval=poll_interval,
                     history_id=body.get("history_id", ""),
                     tool_id=resolved_tool_id,
                     output_ids=output_ids,
+                    deadline=deadline,
                 )
             except GalaxyBackendError as wait_error:
                 raise _enrich_backend_error(
@@ -1670,11 +1697,12 @@ def _run_legacy(client, plan, wait, timeout, poll_interval):
         wait_results = job_mod.wait_for_jobs(
             client,
             job_ids,
-            timeout=timeout,
+            timeout=remaining(deadline),
             poll_interval=poll_interval,
             history_id=body.get("history_id", ""),
             tool_id=resolved_tool_id,
             output_ids=output_ids,
+            deadline=deadline,
         )
     except GalaxyBackendError as error:
         raise _enrich_backend_error(
@@ -1689,7 +1717,7 @@ def _run_legacy(client, plan, wait, timeout, poll_interval):
     _add_wait_results(result, wait_results)
     try:
         result["outputs"] = refresh_output_details(
-            client, body.get("history_id", ""), outputs
+            client, body.get("history_id", ""), outputs, deadline=deadline
         )
     except GalaxyBackendError as error:
         raise _enrich_backend_error(
@@ -1706,7 +1734,9 @@ def _run_legacy(client, plan, wait, timeout, poll_interval):
     return result
 
 
-def _run_strict_after_submit(client, plan, response, wait, timeout, poll_interval):
+def _run_strict_after_submit(
+    client, plan, response, wait, timeout, poll_interval, deadline=None
+):
     body = plan["post_body"]
     if not isinstance(response, dict) or not response.get("tool_request_id"):
         raise _make_backend_error(
@@ -1724,7 +1754,7 @@ def _run_strict_after_submit(client, plan, response, wait, timeout, poll_interva
     if not wait:
         return result
 
-    deadline = time.monotonic() + max(0, timeout)
+    deadline = deadline_after(timeout) if deadline is None else float(deadline)
     try:
         state = _poll_tool_request(client, request_id, deadline, poll_interval)
         detail = get_with_deadline(
@@ -1784,6 +1814,7 @@ def _run_strict_after_submit(client, plan, response, wait, timeout, poll_interva
                     tool_id=body.get("tool_id", ""),
                     request_ids=[request_id],
                     output_ids=implicit_ids,
+                    deadline=deadline,
                 )
             except GalaxyBackendError as wait_error:
                 known_job_details = (
@@ -1856,6 +1887,7 @@ def _run_strict_after_submit(client, plan, response, wait, timeout, poll_interva
             tool_id=body.get("tool_id", ""),
             request_ids=[request_id],
             output_ids=implicit_ids,
+            deadline=deadline,
         )
     except GalaxyBackendError as error:
         known_outputs = list(implicit_outputs)
@@ -1879,7 +1911,10 @@ def _run_strict_after_submit(client, plan, response, wait, timeout, poll_interva
             retry_safe=False,
         )
     try:
-        job_details = [client.get(f"jobs/{job_id}") for job_id in job_ids]
+        job_details = [
+            get_with_deadline(client, f"jobs/{job_id}", deadline=deadline)
+            for job_id in job_ids
+        ]
     except GalaxyBackendError as error:
         raise _enrich_backend_error(
             error,
@@ -1897,7 +1932,7 @@ def _run_strict_after_submit(client, plan, response, wait, timeout, poll_interva
     output_ids = [output["id"] for output in outputs]
     try:
         result["outputs"] = refresh_output_details(
-            client, body.get("history_id", ""), outputs
+            client, body.get("history_id", ""), outputs, deadline=deadline
         )
     except GalaxyBackendError as error:
         raise _enrich_backend_error(
@@ -1924,7 +1959,7 @@ def run_tool(
     execution_backend="auto",
     wait=False,
     timeout=1800,
-    poll_interval=180,
+    poll_interval=None,
     plan=None,
 ):
     """Run a tool through strict, auto-fallback, or legacy execution.
@@ -1934,7 +1969,8 @@ def run_tool(
     need the submitted body to exactly match a prior dry run.
     """
     timeout = float(timeout)
-    poll_interval = float(poll_interval)
+    if poll_interval is not None:
+        poll_interval = float(poll_interval)
     if plan is None:
         if payload is not None:
             plan = {
@@ -2025,7 +2061,9 @@ def run_tool(
         timeout,
         poll_interval,
     )
-def refresh_output_details(client, history_id, outputs, require_complete=True):
+def refresh_output_details(
+    client, history_id, outputs, require_complete=True, deadline=None
+):
     """Fetch compact state/type details for tool output datasets.
 
     Tool submission responses often have incomplete output metadata because the
@@ -2054,7 +2092,11 @@ def refresh_output_details(client, history_id, outputs, require_complete=True):
         if item.get("src") == "hdca":
             history_content_type = "dataset_collection"
         if history_content_type == "dataset_collection":
-            info = client.get(f"histories/{history_id}/contents/dataset_collections/{content_id}")
+            info = get_with_deadline(
+                client,
+                f"histories/{history_id}/contents/dataset_collections/{content_id}",
+                deadline=deadline,
+            )
             if not isinstance(info, dict):
                 if require_complete:
                     raise _make_backend_error(
@@ -2088,7 +2130,11 @@ def refresh_output_details(client, history_id, outputs, require_complete=True):
             refreshed.append(item)
             continue
 
-        info = client.get(f"histories/{history_id}/contents/{content_id}")
+        info = get_with_deadline(
+            client,
+            f"histories/{history_id}/contents/{content_id}",
+            deadline=deadline,
+        )
         if not isinstance(info, dict):
             if require_complete:
                 raise _make_backend_error(

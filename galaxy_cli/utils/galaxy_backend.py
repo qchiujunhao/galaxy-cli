@@ -4,8 +4,9 @@ This module handles all communication with a running Galaxy server instance.
 Galaxy is a hard dependency: the CLI is useless without a reachable server.
 """
 
-import json
 import base64
+import hashlib
+import json
 import os
 import stat
 import time
@@ -24,6 +25,8 @@ DEFAULT_REQUEST_TIMEOUT = 60
 DEFAULT_UPLOAD_TIMEOUT = 300
 DEFAULT_TIMEOUT = DEFAULT_REQUEST_TIMEOUT
 RETRYABLE_GET_STATUS_CODES = {429, 502, 503, 504}
+MIN_RETRY_DELAY = 0.0
+MAX_RETRY_DELAY = 60.0
 
 
 # Exit codes for structured error reporting
@@ -337,16 +340,25 @@ class GalaxyClient:
         retry_after = resp.headers.get("Retry-After") if resp.headers else None
         if retry_after:
             try:
-                return max(0.0, float(retry_after))
+                return min(
+                    MAX_RETRY_DELAY,
+                    max(MIN_RETRY_DELAY, float(retry_after)),
+                )
             except ValueError:
                 try:
                     retry_at = parsedate_to_datetime(retry_after)
                     if retry_at.tzinfo is None:
                         retry_at = retry_at.replace(tzinfo=timezone.utc)
-                    return max(0.0, retry_at.timestamp() - time.time())
+                    return min(
+                        MAX_RETRY_DELAY,
+                        max(MIN_RETRY_DELAY, retry_at.timestamp() - time.time()),
+                    )
                 except (TypeError, ValueError, OverflowError):
                     pass
-        return min(60.0, self.retry_backoff * (2 ** attempt))
+        return min(
+            MAX_RETRY_DELAY,
+            max(MIN_RETRY_DELAY, self.retry_backoff * (2 ** attempt)),
+        )
 
     @staticmethod
     def _deadline_error():
@@ -362,7 +374,7 @@ class GalaxyClient:
             return None
         try:
             remaining = float(deadline) - time.monotonic()
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError):
             raise GalaxyBackendError(
                 "Invalid absolute request deadline.",
                 category="invalid_request",
@@ -452,7 +464,7 @@ class GalaxyClient:
             except ValueError:
                 msg = resp.text[:500]
 
-            msg = self.redact(msg)
+            msg = self.redact(msg)[:500]
 
             status = resp.status_code
             if status in (401, 403):
@@ -482,6 +494,30 @@ class GalaxyClient:
                             "path": f"$.{path}" if path else "$",
                             "expected": self.redact(first.get("msg", "valid input")),
                         }
+                        if first.get("type"):
+                            validation["validation_type"] = self.redact(first["type"])
+                        if "input" in first:
+                            input_value = first.get("input")
+                            validation["received_type"] = (
+                                "null" if input_value is None
+                                else "boolean" if isinstance(input_value, bool)
+                                else "array" if isinstance(input_value, list)
+                                else "object" if isinstance(input_value, dict)
+                                else "number" if isinstance(input_value, (int, float))
+                                else type(input_value).__name__
+                            )
+                        context = first.get("ctx")
+                        if isinstance(context, dict):
+                            allowed = (
+                                context.get("allowed_values")
+                                or context.get("permitted")
+                                or context.get("expected")
+                            )
+                            if isinstance(allowed, (list, tuple, set)):
+                                values = [self.redact(value) for value in allowed]
+                                validation["allowed_values"] = values[:25]
+                                if len(values) > 25:
+                                    validation["allowed_values_truncated"] = True
                         details = {"validation": validation}
                         msg = f"validation failed at {validation['path']}: {validation['expected']}"
                 raise GalaxyBackendError(
@@ -645,7 +681,7 @@ class GalaxyClient:
 
     def tus_upload_file(
         self, file_path, history_id, file_type="auto", dbkey="?",
-        upload_timeout=None, chunk_size=10**7,
+        upload_timeout=None, chunk_size=10**7, progress=None,
     ):
         """Upload through Galaxy's TUS service, then submit the fetch tool once."""
         file_path = Path(file_path)
@@ -681,9 +717,26 @@ class GalaxyClient:
         upload_url = urljoin(self._api_url("upload/resumable_upload"), location)
         session_id = upload_url.rstrip("/").rsplit("/", 1)[-1]
         offset = 0
+        source_digest = hashlib.sha256()
         with open(file_path, "rb") as handle:
             while offset < size:
                 chunk = handle.read(chunk_size)
+                if not chunk:
+                    raise GalaxyBackendError(
+                        "The local TUS upload source changed during upload.",
+                        category="invalid_request",
+                        error_kind="tus_local_file_changed",
+                        exit_code=EXIT_USER_ERROR,
+                        submission_state="submitted",
+                        retry_safe=False,
+                        details={
+                            "tus_session_id": session_id,
+                            "upload_offset": offset,
+                            "local_file_size": size,
+                            "local_file_sha256": source_digest.hexdigest(),
+                        },
+                    )
+                source_digest.update(chunk)
                 patch_headers = {
                     "x-api-key": self.api_key,
                     "Tus-Resumable": "1.0.0",
@@ -696,11 +749,38 @@ class GalaxyClient:
                         timeout=self._timeout_tuple(timeout), allow_redirects=False,
                     )
                 except requests.RequestException as exc:
+                    if progress is not None:
+                        progress(
+                            "TUS upload interrupted; computing the resumable "
+                            "SHA-256 fingerprint before returning. Press Ctrl-C "
+                            "to cancel (the interrupted upload will not be resumable)."
+                        )
+                    last_progress = time.monotonic()
+                    while True:
+                        remaining_chunk = handle.read(chunk_size)
+                        if not remaining_chunk:
+                            break
+                        source_digest.update(remaining_chunk)
+                        if (
+                            progress is not None
+                            and time.monotonic() - last_progress >= 5
+                        ):
+                            progress(
+                                f"Fingerprinting interrupted upload: "
+                                f"{handle.tell()} / {size} bytes"
+                            )
+                            last_progress = time.monotonic()
                     raise GalaxyBackendError(
                         "TUS upload interrupted; resume the recorded operation instead of retrying.",
                         category="connection", error_kind="tus_upload_interrupted",
                         exit_code=EXIT_SERVER_ERROR, submission_state="submitted", retry_safe=False,
-                        details={"tus_session_id": session_id, "upload_offset": offset},
+                        details={
+                            "tus_session_id": session_id,
+                            "upload_offset": offset,
+                            "local_file_size": size,
+                            "local_file_sha256": source_digest.hexdigest(),
+                            "fingerprint_completed_after_interruption": True,
+                        },
                     ) from exc
                 if patched.status_code not in {200, 204}:
                     self._handle_response(patched)
@@ -708,6 +788,11 @@ class GalaxyClient:
                     offset = int(patched.headers.get("Upload-Offset", offset + len(chunk)))
                 except ValueError:
                     offset += len(chunk)
+            while True:
+                remaining_chunk = handle.read(chunk_size)
+                if not remaining_chunk:
+                    break
+                source_digest.update(remaining_chunk)
         payload = {
             "history_id": history_id,
             "targets": [{
@@ -724,14 +809,21 @@ class GalaxyClient:
         try:
             return self.post("tools/fetch", json_data=payload)
         except GalaxyBackendError as exc:
-            exc.details = dict(exc.details or {}, tus_session_id=session_id, upload_offset=offset)
+            exc.details = dict(
+                exc.details or {},
+                tus_session_id=session_id,
+                upload_offset=offset,
+                local_file_size=size,
+                local_file_sha256=source_digest.hexdigest(),
+            )
             exc.submission_state = "unknown"
             exc.retry_safe = False
             raise
 
     def resume_tus_upload_file(
         self, file_path, history_id, session_id, file_type="auto", dbkey="?",
-        upload_timeout=None, chunk_size=10**7,
+        upload_timeout=None, chunk_size=10**7, before_fetch_submit=None,
+        expected_size=None, expected_sha256=None,
     ):
         """Resume an existing TUS session, then submit fetch exactly once."""
         file_path = Path(file_path)
@@ -739,20 +831,67 @@ class GalaxyClient:
         timeout = upload_timeout or self.upload_timeout
         headers = {"x-api-key": self.api_key, "Tus-Resumable": "1.0.0"}
         try:
-            head = requests.head(
-                upload_url, headers=headers, timeout=self._timeout_tuple(timeout),
-                allow_redirects=False,
-            )
-        except requests.RequestException as exc:
+            handle = open(file_path, "rb")
+        except OSError as exc:
             raise GalaxyBackendError(
-                "Unable to inspect the existing TUS upload session.",
-                category="connection", error_kind="tus_resume_unavailable",
-                exit_code=EXIT_SERVER_ERROR, submission_state="submitted", retry_safe=False,
+                "The local TUS upload source is unavailable.",
+                category="invalid_request",
+                error_kind="tus_local_file_unavailable",
+                exit_code=EXIT_USER_ERROR,
+                submission_state="submitted",
+                retry_safe=False,
             ) from exc
-        if head.status_code not in {200, 204}:
-            self._handle_response(head)
-        offset = int(head.headers.get("Upload-Offset", 0))
-        with open(file_path, "rb") as handle:
+        with handle:
+            local_size = os.fstat(handle.fileno()).st_size
+            if expected_sha256 is not None:
+                digest = hashlib.sha256()
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                actual_sha256 = digest.hexdigest()
+                if local_size != expected_size or actual_sha256 != expected_sha256:
+                    raise GalaxyBackendError(
+                        "The local TUS upload source changed after interruption.",
+                        category="invalid_request",
+                        error_kind="tus_local_file_changed",
+                        exit_code=EXIT_USER_ERROR,
+                        submission_state="submitted",
+                        retry_safe=False,
+                        details={
+                            "expected_size": expected_size,
+                            "current_size": local_size,
+                        },
+                    )
+            try:
+                head = requests.head(
+                    upload_url, headers=headers,
+                    timeout=self._timeout_tuple(timeout), allow_redirects=False,
+                )
+            except requests.RequestException as exc:
+                raise GalaxyBackendError(
+                    "Unable to inspect the existing TUS upload session.",
+                    category="connection", error_kind="tus_resume_unavailable",
+                    exit_code=EXIT_SERVER_ERROR, submission_state="submitted",
+                    retry_safe=False,
+                ) from exc
+            if head.status_code not in {200, 204}:
+                self._handle_response(head)
+            try:
+                offset = int(head.headers.get("Upload-Offset", 0))
+            except (TypeError, ValueError):
+                offset = -1
+            if offset < 0 or offset > local_size:
+                raise GalaxyBackendError(
+                    "Galaxy returned an invalid TUS upload offset.",
+                    category="api_error",
+                    error_kind="tus_offset_invalid",
+                    exit_code=EXIT_SERVER_ERROR,
+                    submission_state="submitted",
+                    retry_safe=False,
+                    details={"upload_offset": offset, "local_file_size": local_size},
+                )
             handle.seek(offset)
             while True:
                 chunk = handle.read(chunk_size)
@@ -776,7 +915,29 @@ class GalaxyClient:
                     ) from exc
                 if response.status_code not in {200, 204}:
                     self._handle_response(response)
-                offset = int(response.headers.get("Upload-Offset", offset + len(chunk)))
+                previous_offset = offset
+                try:
+                    offset = int(
+                        response.headers.get(
+                            "Upload-Offset", previous_offset + len(chunk)
+                        )
+                    )
+                except (TypeError, ValueError):
+                    offset = -1
+                if offset <= previous_offset or offset > local_size:
+                    raise GalaxyBackendError(
+                        "Galaxy returned an invalid TUS upload offset.",
+                        category="api_error",
+                        error_kind="tus_offset_invalid",
+                        exit_code=EXIT_SERVER_ERROR,
+                        submission_state="submitted",
+                        retry_safe=False,
+                        details={
+                            "upload_offset": offset,
+                            "previous_offset": previous_offset,
+                            "local_file_size": local_size,
+                        },
+                    )
         payload = {
             "history_id": history_id,
             "targets": [{"destination": {"type": "hdas"}, "elements": [{
@@ -786,9 +947,20 @@ class GalaxyClient:
             "files_0|file_data": {"session_id": session_id, "name": file_path.name},
             "auto_decompress": False,
         }
-        return self.post("tools/fetch", json_data=payload)
+        if before_fetch_submit is not None:
+            before_fetch_submit()
+        try:
+            return self.post("tools/fetch", json_data=payload)
+        except GalaxyBackendError as exc:
+            exc.details = dict(
+                exc.details or {}, tus_session_id=session_id, upload_offset=offset
+            )
+            exc.error_kind = "tus_fetch_submission_unknown"
+            exc.submission_state = "unknown"
+            exc.retry_safe = False
+            raise
 
-    def download_dataset(self, dataset_id, output_path):
+    def download_dataset(self, dataset_id, output_path, max_bytes=None):
         """Download a dataset to a local file."""
         resp = self._request(
             "GET",
@@ -799,6 +971,7 @@ class GalaxyClient:
         try:
             resp.raise_for_status()
         except requests.HTTPError as exc:
+            resp.close()
             raise GalaxyBackendError(
                 f"Failed to download dataset {dataset_id}: {resp.status_code}",
                 category="api_error",
@@ -807,9 +980,29 @@ class GalaxyClient:
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
+        written = 0
+        try:
+            with open(output_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if max_bytes is not None and written + len(chunk) > max_bytes:
+                        raise GalaxyBackendError(
+                            "Dataset exceeded the bounded preview download limit.",
+                            category="invalid_request",
+                            error_kind="preview_download_too_large",
+                            exit_code=EXIT_USER_ERROR,
+                            suggestion="Use 'galaxy-cli dataset download' for an explicit full download.",
+                            details={"max_download_bytes": max_bytes},
+                        )
+                    f.write(chunk)
+                    written += len(chunk)
+        except Exception:
+            try:
+                output_path.unlink()
+            except OSError:
+                pass
+            raise
+        finally:
+            resp.close()
         return {"output": str(output_path), "size": output_path.stat().st_size}
 
     def get_version(self):

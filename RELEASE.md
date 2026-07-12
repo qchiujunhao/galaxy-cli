@@ -25,10 +25,15 @@ environment protection rules if you want a manual approval gate before upload.
 
 ## Release Checklist
 
-1. Run tests locally:
+1. Sync the development environment and run all local checks:
 
    ```bash
-   .venv/bin/python -m pytest galaxy_cli/tests -q
+   uv sync --group dev
+   source .venv/bin/activate
+   ruff check .
+   pytest -q
+   python -m build
+   git diff --check
    ```
 
 2. Commit and push the release changes.

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qchiujunhao.github.io/galaxy-cli/schemas/envelope-v1.json",
+  "title": "galaxy-cli envelope v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "success",
+    "data",
+    "warnings",
+    "next_commands"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "command": {"type": "string", "minLength": 1},
+    "success": {"type": "boolean"},
+    "data": {},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "next_commands": {
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [{"type": "string"}, {"type": "boolean"}]
+      }
+    }
+  },
+  "additionalProperties": false
+}

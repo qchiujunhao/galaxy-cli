@@ -5,11 +5,13 @@ import os
 from pathlib import Path
 
 from galaxy_cli.core.job import wait_for_jobs
+from galaxy_cli.core.polling import deadline_after, remaining
 from galaxy_cli.core.tool import refresh_output_details
 from galaxy_cli.utils.galaxy_backend import (
     EXIT_SERVER_ERROR,
     EXIT_USER_ERROR,
     GalaxyBackendError,
+    get_with_deadline,
 )
 
 
@@ -405,7 +407,7 @@ def _udt_response_errors(response, result, uuid, tool_id):
     )
 
 
-def _full_output_evidence(client, history_id, outputs):
+def _full_output_evidence(client, history_id, outputs, deadline=None):
     details = []
     for output in outputs:
         output_id = output.get("id")
@@ -415,7 +417,7 @@ def _full_output_evidence(client, history_id, outputs):
             path = f"histories/{history_id}/contents/dataset_collections/{output_id}"
         else:
             path = f"histories/{history_id}/contents/{output_id}"
-        details.append(client.get(path))
+        details.append(get_with_deadline(client, path, deadline=deadline))
     return details
 
 
@@ -426,7 +428,7 @@ def run_udt(
     inputs,
     wait=True,
     timeout=1800,
-    poll_interval=180,
+    poll_interval=None,
     evidence=None,
 ):
     """Resolve a UDT UUID, submit it through /api/tools, and optionally wait."""
@@ -516,6 +518,7 @@ def run_udt(
             "tool_id": tool_id,
         }
     )
+    deadline = deadline_after(timeout) if wait else None
 
     if not wait:
         _udt_response_errors(response, result, uuid, tool_id)
@@ -547,13 +550,14 @@ def run_udt(
         wait_results = wait_for_jobs(
             client,
             job_ids,
-            timeout=timeout,
+            timeout=remaining(deadline),
             poll_interval=poll_interval,
             history_id=history_id,
             tool_id=tool_id,
             output_ids=[
                 output.get("id", "") for output in result.get("outputs", [])
             ],
+            deadline=deadline,
         )
         waited_by_id = {job["id"]: job for job in wait_results}
         full_jobs = []
@@ -569,14 +573,24 @@ def run_udt(
                 }
             )
             if evidence is not None:
-                full_jobs.append(client.get(f"jobs/{job['id']}", params={"full": True}))
+                full_jobs.append(
+                    get_with_deadline(
+                        client,
+                        f"jobs/{job['id']}",
+                        params={"full": True},
+                        deadline=deadline,
+                    )
+                )
         result["wait_results"] = wait_results
         if len(wait_results) == 1:
             result["wait_result"] = wait_results[0]
         _udt_response_errors(response, result, uuid, tool_id)
         try:
             result["outputs"] = refresh_output_details(
-                client, history_id, result.get("outputs", [])
+                client,
+                history_id,
+                result.get("outputs", []),
+                deadline=deadline,
             )
         except GalaxyBackendError as exc:
             raise _udt_execution_error(
@@ -592,7 +606,7 @@ def run_udt(
         if evidence is not None:
             evidence["jobs.json"] = full_jobs
             evidence["outputs.json"] = _full_output_evidence(
-                client, history_id, result["outputs"]
+                client, history_id, result["outputs"], deadline=deadline
             )
         result["state"] = "ok"
     return result
@@ -604,7 +618,7 @@ def create_run_udt(
     history_id,
     inputs,
     timeout=1800,
-    poll_interval=180,
+    poll_interval=None,
     evidence=None,
 ):
     """Create exactly one UDT, then run its returned UUID and wait."""

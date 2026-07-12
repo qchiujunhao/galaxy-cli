@@ -1,7 +1,6 @@
 """End-to-end tests for Galaxy CLI.
 
-These tests require a running Galaxy server.
-Set GALAXY_URL and GALAXY_API_KEY environment variables.
+Live tests require ``GALAXY_CLI_LIVE=1`` plus a configured server.
 
 Tests marked with @pytest.mark.e2e require a live server;
 CLI subprocess tests run against the installed command.
@@ -13,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
 
 import pytest
 
@@ -45,17 +43,17 @@ def _resolve_cli(name):
 
 
 def _has_galaxy_server():
-    """Check if a Galaxy server is configured and reachable."""
+    """Check a server only after explicit live-test opt-in."""
+    if os.environ.get("GALAXY_CLI_LIVE") != "1":
+        return False
     url = os.environ.get("GALAXY_URL")
     has_key = os.environ.get("GALAXY_API_KEY") or os.environ.get("GALAXY_API_KEY_FILE")
     if not url or not has_key:
         return False
-    try:
-        import requests
-        resp = requests.get(f"{url.rstrip('/')}/api/version", timeout=10)
-        return resp.status_code == 200
-    except Exception:
-        return False
+    import requests
+    resp = requests.get(f"{url.rstrip('/')}/api/version", timeout=10)
+    resp.raise_for_status()
+    return True
 
 
 def _wait_for_dataset_ready(client, dataset_id, history_id=None, max_wait=180, poll_interval=5):
@@ -77,7 +75,7 @@ def _wait_for_dataset_ready(client, dataset_id, history_id=None, max_wait=180, p
 
 needs_galaxy = pytest.mark.skipif(
     not _has_galaxy_server(),
-    reason="No Galaxy server available (set GALAXY_URL and GALAXY_API_KEY)"
+    reason="Live tests require GALAXY_CLI_LIVE=1 and Galaxy credentials"
 )
 
 needs_udt = pytest.mark.skipif(
@@ -104,7 +102,6 @@ class TestServerConnection:
         client = self._client()
         result = client.whoami()
         assert "username" in result
-        print(f"\n  User: {result['username']} ({result.get('email', '')})")
 
 
 @needs_galaxy
@@ -118,21 +115,14 @@ class TestHistoryE2E:
 
         client = self._client()
 
-        # Create
         created = create_history(client, name="CLI-Test-E2E")
-        assert created["id"]
-        assert created["name"] == "CLI-Test-E2E"
-        print(f"\n  Created history: {created['id']}")
-
-        # List
-        histories = list_histories(client)
-        ids = [h["id"] for h in histories]
-        assert created["id"] in ids
-
-        # Delete
-        deleted = delete_history(client, created["id"])
-        assert deleted["status"] == "deleted"
-        print(f"  Deleted history: {created['id']}")
+        try:
+            assert created["id"]
+            assert created["name"] == "CLI-Test-E2E"
+            histories = list_histories(client)
+            assert created["id"] in [history["id"] for history in histories]
+        finally:
+            delete_history(client, created["id"])
 
 
 @needs_galaxy
@@ -200,7 +190,7 @@ class TestToolE2E:
         return GalaxyClient()
 
     def test_list_and_search_tools(self):
-        from galaxy_cli.core.tool import list_tools, search_tools
+        from galaxy_cli.core.tool import list_tools
 
         client = self._client()
         tools = list_tools(client)

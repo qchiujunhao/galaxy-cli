@@ -3,6 +3,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 from click.testing import CliRunner
 
 
@@ -292,6 +293,33 @@ def test_tus_protocol_creates_patches_and_fetches_once(tmp_path):
     assert fetch.kwargs["json_data"]["files_0|file_data"]["session_id"] == "session-1"
 
 
+def test_tus_interruption_reports_fingerprint_progress(tmp_path):
+    from galaxy_cli.utils.galaxy_backend import GalaxyBackendError, GalaxyClient
+
+    source = tmp_path / "reads.txt"
+    source.write_text("abcdefgh")
+    client = GalaxyClient(url="https://galaxy.example", api_key="secret")
+    created = MagicMock(
+        status_code=201,
+        headers={"Location": "/api/upload/resumable_upload/session-1"},
+    )
+    progress = []
+    with patch(
+        "galaxy_cli.utils.galaxy_backend.requests.post", return_value=created
+    ), patch(
+        "galaxy_cli.utils.galaxy_backend.requests.patch",
+        side_effect=requests.ConnectionError("lost"),
+    ), pytest.raises(GalaxyBackendError) as exc:
+        client.tus_upload_file(
+            source, "h1", chunk_size=4, progress=progress.append
+        )
+
+    assert exc.value.error_kind == "tus_upload_interrupted"
+    assert exc.value.details["fingerprint_completed_after_interruption"] is True
+    assert len(exc.value.details["local_file_sha256"]) == 64
+    assert "Press Ctrl-C" in progress[0]
+
+
 def test_global_output_file_and_bounds(tmp_path):
     from galaxy_cli.cli import cli
 
@@ -303,5 +331,7 @@ def test_global_output_file_and_bounds(tmp_path):
     ):
         result = runner.invoke(cli, ["--output-file", str(output_path), "history", "list"])
     summary = json.loads(result.output)
-    assert summary["truncated"] is True and summary["bytes"] == output_path.stat().st_size
+    assert summary["bytes"] == output_path.stat().st_size
+    assert summary["command"] == "history.list"
+    assert "truncated" not in summary
     assert len(json.loads(output_path.read_text())) == 5

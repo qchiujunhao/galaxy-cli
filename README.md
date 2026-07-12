@@ -1,59 +1,27 @@
-# galaxy-cli — Galaxy bioinformatics command-line client
+# galaxy-cli
 
-`galaxy-cli` is a Python CLI and REPL for operating the
-[Galaxy](https://galaxyproject.org/) bioinformatics platform. It provides
-compact, machine-readable commands for histories, datasets, collections,
-regular tools, user-defined tools (UDTs), workflows, jobs, and libraries.
+`galaxy-cli` is a compact, machine-readable command-line client for a
+running [Galaxy](https://galaxyproject.org/) server. It manages histories,
+datasets, collections, regular tools, user-defined tools (UDTs), workflows,
+jobs, and safe recovery of interrupted operations.
 
-The client is designed for both people and automation. Blocking commands return
-enough final job and output metadata for a caller to trust one invocation
-without repeating status and contents queries.
-
-## Requirements
-
-- Python 3.9 or newer
-- A reachable Galaxy server
-- A Galaxy API key for that server
-
-The runtime remains based on Click and requests and does not require BioBlend,
-Node, or an MCP client.
+The runtime supports Python 3.9–3.13. Server-backed commands require a
+reachable Galaxy server and API key.
 
 ## Install
 
-Install from PyPI:
-
 ```bash
 uv tool install galaxy-cli
+galaxy-cli --version
 ```
 
-or:
+Alternatively:
 
 ```bash
 python3 -m pip install galaxy-cli
 ```
 
-For local development from this repository:
-
-```bash
-python3 -m pip install .
-```
-
-Verify the command:
-
-```bash
-galaxy-cli --version
-galaxy-cli --help
-```
-
-## Configure Galaxy Access
-
-Set the server URL and provide the key directly or through a secret file:
-
-```bash
-export GALAXY_URL=https://usegalaxy.org
-export GALAXY_API_KEY=your-api-key
-galaxy-cli config test
-```
+## Configure access
 
 ```bash
 export GALAXY_URL=https://usegalaxy.org
@@ -61,311 +29,220 @@ export GALAXY_API_KEY_FILE=secrets/galaxy-api-key
 galaxy-cli config test
 ```
 
-An explicit `--api-key` takes precedence over `GALAXY_API_KEY`, which takes
-precedence over `GALAXY_API_KEY_FILE`. Configuration output masks credentials,
-and structured errors redact known secrets.
+`GALAXY_API_KEY` is also supported. Do not put a key in a command, input
+file, receipt, cache entry, or log. Configuration output masks credentials and
+the CLI redacts configured keys from stdout, stderr, output files, and errors.
 
-Session state is stored in a per-user application directory. In concurrent or
-agent-driven work, pass `--history-id` explicitly instead of relying on shared
-session state.
+## Canonical happy path
 
-## Reliable Blocking Results
+```bash
+galaxy-cli history copy SEED_HISTORY_ID --name analysis
+galaxy-cli history find HISTORY_ID --exact-name input.tsv
+galaxy-cli tool find "tool name"
+galaxy-cli tool inputs TOOL_ID
+galaxy-cli tool run TOOL_ID --history HISTORY_ID --inputs @inputs.json
+galaxy-cli dataset preview OUTPUT_ID --lines 5
+```
 
-`tool run`, `udt run`, `udt create-run`, and `dataset upload` wait by default.
-`history copy` also waits by default in 1.5.0. All spawned jobs share one
-deadline; the timeout is not restarted for each job.
+The natural-language names above are aliases. Machine-readable command
+identity is always normalized to the canonical command:
 
-A successful blocking `tool run` reports:
+| Alias | Canonical command |
+| --- | --- |
+| `tool find` | `tool search` |
+| `tool inputs`, `tool schema` | `tool template` |
+| `dataset preview`, `dataset head` | `dataset peek` |
+| `history ls` | `history list` |
+| `history find` | `history resolve` |
+| `collection get` | `collection resolve` |
+| `job debug` | `job diagnose` |
 
-- `success: true` and `state: ok`
-- the selected `execution_backend`
-- `history_id`, `tool_id`, and `tool_version`
-- every job ID, final state, and exit code
-- every dataset output name, ID, source, state, extension, and file size
-- every collection output name, ID, source, state, collection type, and element
-  count
+All v1.5 canonical names remain valid.
 
-For a single job, the existing `wait_result` remains available and the uniform
-`wait_results` list is also returned. Callers should trust this successful
-result rather than immediately repeating `job show`, `dataset show`,
-`collection show`, or history-contents requests.
+## Short structured help
 
-If any job fails or remains non-terminal at the deadline, the command exits
-non-zero. Timeout errors use the dedicated timeout exit code. Structured errors
-include the known request, job, output, history, and tool context together with
-`submission_state` and `retry_safe`.
+Ask for only the contract needed for one command:
 
-Never automatically retry a mutating command when `submission_state` is
-`unknown` or `retry_safe` is false. A timeout, lost connection, server error, or
-malformed success response can occur after Galaxy accepted a submission.
+```bash
+galaxy-cli help tool.run --json
+galaxy-cli help dataset.upload --json
+galaxy-cli help operation.resume --json
+```
 
-Use `--no-wait` only when an immediate, non-authoritative submission result is
-intentional.
+This bounded response contains the canonical command, shortest usage,
+required values, mechanical defaults, and safety rules. Use `tool template`
+only when the exact tool input contract is not already known.
 
-## Regular Tool Execution Backends
+## Unified JSON inputs
 
-`tool run` accepts:
+The recommended form is `--inputs @file`:
+
+```bash
+galaxy-cli tool run TOOL_ID --history HISTORY_ID --inputs @inputs.json
+galaxy-cli tool validate TOOL_ID --history HISTORY_ID --inputs @inputs.json
+galaxy-cli udt run UUID --history HISTORY_ID --inputs @inputs.json
+```
+
+Inline JSON and stdin are also accepted:
+
+```bash
+galaxy-cli tool run TOOL_ID --history HISTORY_ID --inputs '{"input":{"src":"hda","id":"DATASET_ID"}}'
+printf '%s\n' '{"input":{"src":"hda","id":"DATASET_ID"}}' |
+  galaxy-cli tool run TOOL_ID --history HISTORY_ID --inputs -
+```
+
+The existing `--inputs-json FILE` flag remains supported. Do not combine it
+with `--inputs`. Inputs must decode to a JSON object; errors never echo the
+inline payload. Existing `-i key=value` flags still work and override loaded
+JSON keys for `tool run`.
+
+`--history` is an alias for `--history-id`.
+
+## Blocking results and safe recovery
+
+Tool, UDT, workflow, and upload commands wait by default. One global deadline
+covers request expansion, every spawned job, and final output metadata.
+Successful results include final job states and compact dataset/collection
+metadata, so routine follow-up status calls are unnecessary.
+
+Polling is adaptive by default:
 
 ```text
---execution-backend auto|strict|legacy
+5s, 10s, 20s, 30s, 30s, ...
 ```
 
-The default `auto` mode prefers strict nested execution through `/api/jobs`.
-It submits native nested inputs, tracks the returned tool request, discovers
-all spawned jobs and implicit collections, waits for every job, and normalizes
-the final outputs.
+An explicit `--poll-interval N` selects the compatible fixed interval.
 
-Auto mode falls back to legacy `/api/tools` execution only when the initial
-strict endpoint explicitly returns HTTP 404 or 405. It does not fall back after
-400 or 422 validation errors, timeouts, connection failures, 5xx responses, an
-unknown submission state, or any failure after a strict request was accepted.
-This rule prevents accidental duplicate submissions.
-
-Use `legacy` for a server known not to support strict execution. Legacy mode
-retains the existing pipe-key input flattening behavior.
-
-Inspect the selected backend and exact request without submitting:
+Mutating operations create secret-free receipts. If a request is interrupted:
 
 ```bash
-galaxy-cli tool run TOOL_ID \
-  --history-id HISTORY_ID \
-  --inputs-json tool-inputs.json \
-  --dry-run-payload
-```
-
-Nested dataset and collection references use Galaxy's native objects:
-
-```json
-{
-  "dataset_input": {"src": "hda", "id": "DATASET_ID"},
-  "collection_input": {"src": "hdca", "id": "COLLECTION_ID"}
-}
-```
-
-Repeats, conditionals, and multiple-data inputs can remain nested in the input
-file. Run `galaxy-cli tool run --help` for the current command options.
-
-## History Copy Readiness
-
-`history copy` waits for copied datasets and collections to leave transient
-states such as `new`, `queued`, `running`, and `setting_metadata`. All copied
-contents share one deadline. A content failure or timeout produces a non-zero
-structured error.
-
-```bash
-galaxy-cli history copy SOURCE_HISTORY_ID "working copy" \
-  --timeout 1800 \
-  --poll-interval 10
-```
-
-The successful result contains a compact `contents` map with history content
-IDs, HIDs, sources, names, states, and dataset or collection type metadata. It
-does not emit the complete history response.
-
-Use `--no-wait` to preserve the immediate-return behavior from 1.4.1.
-
-## Reduce Follow-Up Calls
-
-Preview one explicitly named dataset output as part of a successful tool run:
-
-```bash
-galaxy-cli tool run TOOL_ID \
-  --history-id HISTORY_ID \
-  --inputs-json tool-inputs.json \
-  --peek-output report \
-  --peek-lines 5
-```
-
-No output is previewed or downloaded by default. Collection outputs are not
-expanded automatically; requesting one returns a clear unsupported result.
-
-Compact `tool show` input templates are cached by Galaxy URL, server version,
-exact tool ID, and tool version. Refresh or bypass the cache when needed:
-
-```bash
-galaxy-cli tool show TOOL_ID --refresh-cache
-galaxy-cli tool show TOOL_ID --no-cache
-```
-
-Validation failures stay compact. They identify the failing JSON path,
-expected type or allowed values, and a short correction example rather than
-printing the complete tool schema.
-
-Use compact discovery when an ID or input shape is not already known:
-
-```bash
-galaxy-cli history contents HISTORY_ID --state ok --type dataset --limit 20
-galaxy-cli history resolve HISTORY_ID --exact-name reads.fastq
-galaxy-cli tool search "cut columns" --input-extension tabular --resolve
-galaxy-cli tool template TOOL_ID
-galaxy-cli tool examples TOOL_ID --limit 2
-galaxy-cli tool validate TOOL_ID --history-id HISTORY_ID --inputs-json inputs.json
-```
-
-`tool validate` uses Galaxy's non-executing build check. If unavailable, it
-returns `supported: false`; it never labels local validation as server
-validation.
-
-Tool search uses stable metadata cache by default. Use `--no-cache` or
-`--refresh-cache` when required. Entries have a creation-time TTL and are
-silently rebuilt when stale or damaged. Give each benchmark replicate an
-independent directory:
-
-```bash
-export GALAXY_CLI_CACHE_DIR=.cache/replicate-01
-```
-
-Do not share it between replicates. Histories, jobs, datasets, UDT results,
-operation outputs, and scientific data are never metadata-cached. Inspect
-cached read-only server support with `galaxy-cli server capabilities`.
-
-## Diagnostics and Collection Resolution
-
-Use progressive diagnostics only after a reported failure:
-
-```bash
-galaxy-cli job diagnose JOB_ID
-galaxy-cli job logs JOB_ID --tail 100
-galaxy-cli job logs JOB_ID --grep 'error|fatal' --context 3 --max-chars 12000
-```
-
-Full logs remain explicitly recoverable with `job logs --full` and the global
-`--output-file` option. Nested collections can be flattened or resolved by a
-stable element path:
-
-```bash
-galaxy-cli collection show COLLECTION_ID --flatten --limit 100
-galaxy-cli collection resolve COLLECTION_ID --element sample/forward
-```
-
-Traversal has cycle, depth, and result limits.
-
-## User-Defined Tools
-
-The UDT command surface remains stable:
-
-```text
-udt list
-udt show
-udt create
-udt delete
-udt run
-udt create-run
-```
-
-Create and run a new UDT in one blocking command:
-
-```bash
-galaxy-cli udt create-run \
-  --representation-json udt.json \
-  --history-id HISTORY_ID \
-  --inputs-json udt-inputs.json
-```
-
-UDTs use the same all-job wait and output normalization behavior as regular
-blocking execution. A successful result needs no routine job, dataset, or
-history verification.
-
-`--evidence-dir` remains available for explicit debugging and compatibility
-with 1.4.1. It is not required for normal execution and should not be enabled by
-default.
-
-Validate a representation and runtime model without creating a UDT:
-
-```bash
-galaxy-cli udt validate --representation-json udt.json --history-id HISTORY_ID
-```
-
-The history is build context only. If omitted, the command uses an existing
-history; it does not create a UDT or select a container.
-
-## Workflows, Receipts, and Uploads
-
-Workflow runs now wait by default for scheduling and every spawned job:
-
-```bash
-galaxy-cli workflow template WORKFLOW_ID
-galaxy-cli workflow run WORKFLOW_ID --history-id HISTORY_ID -i 0=hda:DATASET_ID
-```
-
-Use `--no-wait` only for intentional asynchronous submission.
-
-Mutating tool, UDT, workflow, and upload commands write a secret-free receipt.
-Receipts contain payload hashes and known Galaxy IDs, not request bodies or
-API keys:
-
-```bash
-galaxy-cli operation show RECEIPT_ID
-galaxy-cli operation list --state unknown
 galaxy-cli operation resume RECEIPT_ID
 ```
 
-Resume only polls known records or continues a known TUS session; it never
-blindly repeats an unknown POST. Override storage with
-`GALAXY_CLI_OPERATION_DIR`.
+Resume discovers known requests, jobs, and outputs, waits against one deadline,
+refreshes final metadata, and never replays an ordinary submission POST. If
+`submission_state` is `unknown` or `retry_safe` is false, do not resubmit.
+TUS recovery serializes its one permitted fetch submission with a durable
+per-receipt lock and rejects a changed local file by size and SHA-256 identity.
+For a very large source, interruption recovery may require a full file read to
+finish or revalidate SHA-256; progress is written only to stderr and Ctrl-C
+cancels the scan.
+An external receipt path cannot authorize TUS mutation. Use the returned
+`next_commands` in envelope/agent mode.
 
-Dataset upload selects TUS from cached server capabilities by default:
+## Bounded previews
 
-```bash
-galaxy-cli dataset upload reads.fastq --history-id HISTORY_ID
-galaxy-cli dataset upload reads.fastq --history-id HISTORY_ID --upload-backend legacy
-```
-
-Auto fallback is limited to clearly unsupported TUS session creation. An
-interrupted transfer or uncertain fetch submission is recorded, not restarted.
-
-## Output Modes
-
-Compact, single-line JSON is the default:
+Head previews use Galaxy's bounded raw-data provider:
 
 ```bash
-galaxy-cli history list | jq .
-galaxy-cli tool run TOOL_ID --history-id HISTORY_ID --inputs-json inputs.json
+galaxy-cli dataset preview DATASET_ID --head 10
+galaxy-cli dataset preview DATASET_ID --head 10 --fields 1,3,5 --delimiter tab
 ```
 
-Progress is written to stderr so stdout remains one JSON value. Use `--human`
-when interactive prose is preferable.
-
-Bound large results or write the complete redacted value to a file:
+`--tail` and `--grep` may scan a temporary local copy only when Galaxy
+reports that the dataset is within the hard 5 MiB preview threshold:
 
 ```bash
-galaxy-cli --max-items 50 --max-chars 12000 history list
-galaxy-cli --output-file job-logs.json job logs JOB_ID --full
+galaxy-cli dataset preview DATASET_ID --tail 10
+galaxy-cli dataset preview DATASET_ID --grep 'error|failed' --context 2
 ```
 
-With `--output-file`, stdout contains a compact summary, path, byte count, and
-`truncated` marker; the complete JSON is written to the requested file.
+Oversized or size-unknown datasets are refused with a suggestion to use an
+explicit `dataset download`. Temporary scan files live in the private CLI
+cache area (or `GALAXY_CLI_PREVIEW_TMPDIR`), are scanned with bounded streaming
+selectors, and are removed in a `finally` path.
 
-## Agent Skill
-
-The package includes a short decision-rule skill for Codex and Claude Code:
+Collections require an exact element path:
 
 ```bash
-galaxy-cli skill install --agent codex
-galaxy-cli skill install --agent claude
+galaxy-cli collection preview COLLECTION_ID --element sample1/report --lines 5
+galaxy-cli tool run TOOL_ID --history HISTORY_ID --inputs @inputs.json \
+  --peek-output results --peek-element sample1/report --peek-lines 5
 ```
 
-Use `galaxy-cli skill path` to locate the packaged source. A relative custom
-destination is also supported:
+Resolution retains cycle, depth, ambiguity, and result-count guards. The CLI
+never expands an entire collection or guesses an element.
+
+## Stable opt-in output
+
+Default 1.x output remains compact single-line JSON without a new envelope.
+Opt in when a stable top-level contract is useful:
 
 ```bash
-galaxy-cli skill install --target-dir project-skills
+galaxy-cli --envelope tool run TOOL_ID --history HISTORY_ID --inputs @inputs.json
+export GALAXY_CLI_OUTPUT=envelope-v1
+galaxy-cli tool run TOOL_ID --history HISTORY_ID --inputs @inputs.json
 ```
 
-The skill directs agents to command help, authoritative blocking results, and
-safe retry rules. It intentionally does not contain a full CLI tutorial,
-benchmark recipes, scientific-method selection, or answer-extraction rules.
+Envelope v1 has these stable fields:
 
-## Tests and Releases
+```json
+{
+  "schema_version": "1.0",
+  "command": "tool.run",
+  "success": true,
+  "data": {},
+  "warnings": [],
+  "next_commands": {}
+}
+```
 
-Run the mocked suite:
+`--agent` enables envelope v1, compact JSON, blocking defaults, bounded
+lists/strings, a 128 KiB serialized-stdout budget, a 1000-node traversal
+budget, stderr-only progress, actionable errors, and safe mechanical next
+commands. Budget exhaustion is reported in `warnings`. Agent mode never
+selects a Galaxy tool, changes scientific parameters, rewrites inputs, chooses
+an output, or executes a next command.
+
+`--output-file PATH` atomically writes the complete redacted success or error
+JSON result to the file. Stdout contains only a bounded summary; known API keys
+are redacted from both the file and the echoed path.
+
+The packaged schema is `galaxy_cli/schemas/envelope-v1.json`.
+
+## Cache observability
+
+Stable read-only server/tool metadata is cached automatically:
 
 ```bash
-python3 -m pytest galaxy_cli/tests -q
+galaxy-cli cache stats
+galaxy-cli cache clear --namespace tool-schema
+galaxy-cli cache warm --server --tools
 ```
 
-Live Galaxy tests are opt-in and run only when test credentials are already
-available in the environment. Releases are built from Git tags through GitHub
-Actions and PyPI Trusted Publishing; see [RELEASE.md](RELEASE.md).
+`stats` reports namespaces, counts, bytes, fresh/stale/corrupt entries,
+process-local hit counters, TTL, and hashed server identities. It never returns
+cached keys or schema bodies. Stored server identities exclude URL credentials,
+queries, and fragments. Histories, jobs, datasets, operation outputs,
+UDT results, and scientific data are never warmed.
 
-Documentation site: <https://qchiujunhao.github.io/galaxy-cli/>
+Set `GALAXY_CLI_CACHE_DIR` in the launcher to isolate concurrent processes,
+tasks, or users. Agents normally should not clear or warm caches themselves.
+
+## Diagnostics
+
+Errors preserve non-zero exit codes and add mechanical fields such as JSON
+path, expected type, bounded allowed values, correction, and
+`did_you_mean`. Suggestions are never executed.
+
+```bash
+galaxy-cli job diagnose JOB_ID
+galaxy-cli job logs JOB_ID --tail 100 --grep error --context 2
+```
+
+Full execution, safety, cache, and recovery semantics are documented in
+[GALAXY.md](GALAXY.md). Development and live-test instructions are in
+[galaxy_cli/tests/TEST.md](galaxy_cli/tests/TEST.md).
+
+## Development
+
+```bash
+uv sync --group dev
+.venv/bin/python -m pytest galaxy_cli/tests -q
+.venv/bin/ruff check galaxy_cli
+.venv/bin/python -m build
+```
+
+Live compatibility tests are explicitly opt-in and use separate
+`usegalaxy`/local markers. They never run merely because credentials happen
+to exist.

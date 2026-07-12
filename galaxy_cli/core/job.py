@@ -3,6 +3,7 @@
 import time
 import re
 
+from galaxy_cli.core.polling import deadline_after, sleep_for_poll
 from galaxy_cli.utils.galaxy_backend import (
     EXIT_SERVER_ERROR,
     EXIT_TIMEOUT,
@@ -275,12 +276,13 @@ def wait_for_jobs(
     client,
     job_ids,
     timeout=600,
-    poll_interval=5,
+    poll_interval=None,
     *,
     history_id="",
     tool_id="",
     request_ids=None,
     output_ids=None,
+    deadline=None,
 ):
     """Wait for all jobs against one monotonic deadline.
 
@@ -293,15 +295,16 @@ def wait_for_jobs(
         return []
 
     timeout = max(0.0, float(timeout))
-    poll_interval = max(0.0, float(poll_interval))
+    supplied_deadline = deadline is not None
     started = time.monotonic()
-    deadline = started + timeout
+    deadline = deadline_after(timeout) if deadline is None else float(deadline)
     pending = set(ordered_ids)
     observed = {
         job_id: {"id": job_id, "state": "unknown", "exit_code": None}
         for job_id in ordered_ids
     }
     first_poll = True
+    poll_attempt = 0
 
     while pending:
         now = time.monotonic()
@@ -324,7 +327,7 @@ def wait_for_jobs(
                 info = get_with_deadline(
                     client,
                     f"jobs/{job_id}",
-                    deadline=deadline if timeout > 0 else None,
+                    deadline=deadline if timeout > 0 or supplied_deadline else None,
                 )
             except GalaxyBackendError as exc:
                 waited = round(max(0.0, time.monotonic() - started), 3)
@@ -403,14 +406,16 @@ def wait_for_jobs(
                 )
             break
 
-        time.sleep(min(poll_interval, max(0.0, deadline - now)))
+        poll_attempt = sleep_for_poll(
+            poll_attempt, deadline, poll_interval=poll_interval
+        )
 
     waited = round(max(0.0, time.monotonic() - started), 3)
     jobs = _observed_job_results(ordered_ids, observed, waited)
     return jobs
 
 
-def wait_for_job(client, job_id, max_wait=600, poll_interval=5):
+def wait_for_job(client, job_id, max_wait=600, poll_interval=None):
     """Backward-compatible single-job wrapper around :func:`wait_for_jobs`."""
     return wait_for_jobs(
         client,

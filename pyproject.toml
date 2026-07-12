@@ -26,6 +26,7 @@ dependencies = [
     "prompt-toolkit>=3.0.0",
     "requests>=2.28.0",
 ]
+
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
@@ -44,13 +45,25 @@ Source = "https://github.com/qchiujunhao/galaxy-cli"
 Issues = "https://github.com/qchiujunhao/galaxy-cli/issues"
 Changelog = "https://github.com/qchiujunhao/galaxy-cli/releases"
 
+[dependency-groups]
+dev = [
+    "build>=1.2",
+    "pytest>=8.0",
+    "ruff>=0.9",
+]
+
 [tool.setuptools.packages.find]
 include = ["galaxy_cli*"]
 
 [tool.setuptools.package-data]
-"galaxy_cli" = ["README.md", "skills/*.md"]
+"galaxy_cli" = ["README.md", "skills/*.md", "schemas/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["galaxy_cli/tests"]
+markers = [
+    "live: opt-in tests that contact a configured Galaxy server",
+    "usegalaxy: live compatibility against a public usegalaxy deployment",
+    "local_galaxy: live compatibility against a local/private Galaxy deployment",
+]
 
 [tool.setuptools_scm]

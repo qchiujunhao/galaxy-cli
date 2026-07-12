@@ -13,6 +13,7 @@ from galaxy_cli.utils.galaxy_backend import (
     get_with_deadline,
 )
 from galaxy_cli.core.job import wait_for_jobs
+from galaxy_cli.core.polling import deadline_after, remaining, sleep_for_poll
 from galaxy_cli.core.tool import _job_outputs, refresh_output_details
 
 _GALAXY_ID_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
@@ -306,13 +307,14 @@ def run_workflow(client, workflow_id, history_id=None, inputs=None, params=None,
     }
 
 
-def wait_for_workflow_run(client, result, timeout=1800, poll_interval=10):
+def wait_for_workflow_run(client, result, timeout=1800, poll_interval=None):
     """Wait for scheduling and all spawned jobs against one global deadline."""
     invocation_id = result.get("id", "")
     history_id = result.get("history_id", "")
     started = time.monotonic()
-    deadline = started + max(0.0, float(timeout))
+    deadline = deadline_after(timeout)
     detail = {}
+    poll_attempt = 0
     while True:
         if time.monotonic() >= deadline:
             raise GalaxyBackendError(
@@ -335,18 +337,30 @@ def wait_for_workflow_run(client, result, timeout=1800, poll_interval=10):
         job_ids = [step.get("job_id") for step in steps if step.get("job_id")]
         if state in {"scheduled", "completed"}:
             break
-        time.sleep(min(max(0.0, float(poll_interval)), max(0.0, deadline - time.monotonic())))
+        poll_attempt = sleep_for_poll(
+            poll_attempt, deadline, poll_interval=poll_interval
+        )
 
-    remaining = max(0.0, deadline - time.monotonic())
+    seconds_left = remaining(deadline)
     jobs = wait_for_jobs(
-        client, job_ids, timeout=remaining, poll_interval=poll_interval,
+        client, job_ids, timeout=seconds_left, poll_interval=poll_interval,
         history_id=history_id, tool_id=f"workflow:{result.get('workflow_id', '')}",
         request_ids=[invocation_id],
+        deadline=deadline,
     ) if job_ids else []
-    job_details = [client.get(f"jobs/{job_id}") for job_id in job_ids]
+    job_details = [
+        get_with_deadline(client, f"jobs/{job_id}", deadline=deadline)
+        for job_id in job_ids
+    ]
     outputs = _job_outputs(job_details)
     if outputs and history_id:
-        outputs = refresh_output_details(client, history_id, outputs, require_complete=False)
+        outputs = refresh_output_details(
+            client,
+            history_id,
+            outputs,
+            require_complete=False,
+            deadline=deadline,
+        )
     final = dict(result)
     final.update({
         "success": True,

@@ -90,7 +90,6 @@ def show_session(session_path=None):
 
 def clear_session(session_path=None):
     """Clear session state."""
-    path = Path(session_path) if session_path else DEFAULT_SESSION_FILE
     empty = {
         "current_history_id": None,
         "current_history_name": None,

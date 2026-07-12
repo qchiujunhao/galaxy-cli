@@ -19,9 +19,13 @@ def _probe_get(client, path, params=None):
 def server_capabilities(client, use_cache=True, refresh_cache=False):
     """Inspect only read-only endpoints; never probe by submitting a write."""
     version = metadata_cache.server_version(client, refresh=refresh_cache)
-    key = [client.url, version]
+    identity = metadata_cache.server_identity(client.url)
+    secrets = (getattr(client, "api_key", ""),)
+    key = [identity, version]
     if use_cache and not refresh_cache:
-        cached = metadata_cache.read("server-capabilities", key)
+        cached = metadata_cache.read(
+            "server-capabilities", key, secrets=secrets
+        )
         if isinstance(cached, dict):
             return cached
 
@@ -63,7 +67,7 @@ def server_capabilities(client, use_cache=True, refresh_cache=False):
         version_parts = ()
     strict_supported = bool(endpoints["jobs"] and version_parts >= (24, 0))
     result = {
-        "galaxy_url": client.url,
+        "galaxy_url": identity,
         "server_version": version,
         "capabilities": {
             "strict_tool_requests": strict_supported,
@@ -77,18 +81,28 @@ def server_capabilities(client, use_cache=True, refresh_cache=False):
         "probe_mode": "read_only",
     }
     if use_cache:
-        metadata_cache.write("server-capabilities", key, result)
+        metadata_cache.write(
+            "server-capabilities", key, result, secrets=secrets
+        )
     return result
 
 
 def datatype_mapping(client, use_cache=True, refresh_cache=False):
     version = metadata_cache.server_version(client, refresh=refresh_cache)
-    key = [client.url, version]
+    secrets = (getattr(client, "api_key", ""),)
+    key = [metadata_cache.server_identity(client.url), version]
     if use_cache and not refresh_cache:
-        cached = metadata_cache.read("datatype-mapping", key)
+        cached = metadata_cache.read(
+            "datatype-mapping", key, secrets=secrets
+        )
         if cached is not None:
             return cached
     value = client.get("datatypes", params={"extension_only": False})
     if use_cache:
-        metadata_cache.write("datatype-mapping", key, value)
+        metadata_cache.write(
+            "datatype-mapping",
+            key,
+            value,
+            secrets=secrets,
+        )
     return value
